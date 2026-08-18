@@ -12,9 +12,10 @@ use super::skeleton::render_dashboard_skeleton;
 use super::time_window_picker::TimeWindowPicker;
 
 /// Emitted when the user picks a different time window so the parent
-/// (`AppView`) can trigger a rescan with the new window.
+/// (`AppView`) can trigger a rescan. Carries no payload: the new window is
+/// already stored on `Dashboard::selected_window` before this is emitted.
 #[derive(Clone, Debug)]
-pub struct WindowChanged(pub TimeWindow);
+pub struct WindowChanged;
 
 impl gpui::EventEmitter<WindowChanged> for Dashboard {}
 
@@ -92,7 +93,7 @@ impl Render for Dashboard {
                             if this.selected_window != tw {
                                 this.selected_window = tw;
                                 // Emit event so AppView triggers a rescan
-                                cx.emit(WindowChanged(tw));
+                                cx.emit(WindowChanged);
                                 cx.notify();
                             }
                         });

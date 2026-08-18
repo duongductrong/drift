@@ -167,11 +167,6 @@ pub fn parse_claude_line(line: &str) -> Option<UsageEvent> {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned(),
-        working_dir: v
-            .get("cwd")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned(),
         tokens,
         reported_cost,
         dedup_id,
@@ -190,7 +185,6 @@ pub fn parse_claude_line(line: &str) -> Option<UsageEvent> {
 pub struct CodexParseState {
     pub current_model: String,
     pub current_session: String,
-    pub current_dir: String,
     /// Serialised `last_token_usage` for consecutive duplicate suppression.
     pub last_usage_signature: Option<String>,
 }
@@ -211,17 +205,11 @@ pub fn parse_codex_line(line: &str, state: &mut CodexParseState) -> Option<Usage
             {
                 state.current_session = id.to_owned();
             }
-            if let Some(cwd) = payload.get("cwd").and_then(Value::as_str) {
-                state.current_dir = cwd.to_owned();
-            }
             return None;
         }
         Some("turn_context") => {
             if let Some(m) = payload.get("model").and_then(Value::as_str) {
                 state.current_model = m.to_owned();
-            }
-            if let Some(cwd) = payload.get("cwd").and_then(Value::as_str) {
-                state.current_dir = cwd.to_owned();
             }
             return None;
         }
@@ -278,7 +266,6 @@ pub fn parse_codex_line(line: &str, state: &mut CodexParseState) -> Option<Usage
         } else {
             state.current_session.clone()
         },
-        working_dir: state.current_dir.clone(),
         tokens,
         reported_cost: None,
         // Codex rollout files are per-session; no cross-file dedup needed.
@@ -296,7 +283,6 @@ pub fn parse_codex_line(line: &str, state: &mut CodexParseState) -> Option<Usage
 pub struct KimiParseState {
     pub current_model: String,
     pub session_key: String,
-    pub working_dir: String,
 }
 
 /// Feeds one line of a Kimi wire.jsonl into `state`, returning a record when
@@ -365,7 +351,6 @@ pub fn parse_kimi_line(line: &str, state: &mut KimiParseState) -> Option<UsageEv
         timestamp_ms,
         model_name: state.current_model.clone(),
         session_key: state.session_key.clone(),
-        working_dir: state.working_dir.clone(),
         tokens,
         reported_cost: None,
         dedup_id,
@@ -388,8 +373,7 @@ fn read_transcript_records(path: &Path, provider: Provider) -> Option<Vec<UsageE
     let mut kimi_state = KimiParseState::default();
     let mut seen_in_file: HashSet<String> = HashSet::new();
 
-    // For Kimi, extract session key and working dir from the path and
-    // state.json in the session directory.
+    // For Kimi, extract the session key from the session directory name.
     if provider == Provider::Kimi {
         // path is .../session_<uuid>/agents/main/wire.jsonl
         if let Some(session_dir) = path.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) {
@@ -398,16 +382,6 @@ fn read_transcript_records(path: &Path, provider: Provider) -> Option<Vec<UsageE
                 .and_then(|n| n.to_str())
                 .unwrap_or("unknown");
             kimi_state.session_key = session_name.to_owned();
-
-            // Try reading state.json for working directory
-            let state_path = session_dir.join("state.json");
-            if let Ok(content) = fs::read_to_string(&state_path) {
-                if let Ok(state) = serde_json::from_str::<Value>(&content) {
-                    if let Some(cwd) = state.get("cwd").and_then(Value::as_str) {
-                        kimi_state.working_dir = cwd.to_owned();
-                    }
-                }
-            }
         }
     }
 
@@ -570,19 +544,11 @@ fn scan_opencode(since_ms: i64) -> Vec<UsageEvent> {
             .and_then(Value::as_f64)
             .filter(|c| c.is_finite() && *c > 0.0);
 
-        let working_dir = data
-            .get("path")
-            .and_then(|p| p.get("cwd"))
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned();
-
         events.push(UsageEvent {
             provider: Provider::OpenCode,
             timestamp_ms: time_created,
             model_name,
             session_key: session_id,
-            working_dir,
             tokens,
             reported_cost,
             dedup_id: Some(msg_id),
@@ -749,31 +715,6 @@ fn read_antigravity_db(path: &Path, session_key: &str) -> Option<Vec<UsageEvent>
     )
     .ok()?;
 
-    // Try to extract working directory from trajectory_metadata_blob
-    let working_dir = conn
-        .query_row(
-            "SELECT data FROM trajectory_metadata_blob LIMIT 1",
-            [],
-            |row| row.get::<_, Vec<u8>>(0),
-        )
-        .ok()
-        .and_then(|blob| {
-            let fields = decode_pb_fields(&blob);
-            // Field 1 often contains a workspace URI string like "file:///path/to/project"
-            fields.get(&1).and_then(|vals| {
-                vals.iter().find_map(|v| {
-                    let bytes = v.as_bytes()?;
-                    let s = std::str::from_utf8(bytes).ok()?;
-                    if s.starts_with("file:///") {
-                        Some(s.strip_prefix("file://").unwrap_or(s).to_owned())
-                    } else {
-                        None
-                    }
-                })
-            })
-        })
-        .unwrap_or_default();
-
     let mut events = Vec::new();
 
     let mut stmt = conn
@@ -892,7 +833,6 @@ fn read_antigravity_db(path: &Path, session_key: &str) -> Option<Vec<UsageEvent>
             timestamp_ms,
             model_name: "gemini-auto".to_owned(),
             session_key: session_key.to_owned(),
-            working_dir: working_dir.clone(),
             tokens,
             reported_cost: None,
             dedup_id,
@@ -991,11 +931,7 @@ pub fn scan_all(window: TimeWindow, pricing: &PricingTable) -> UsageSnapshot {
         let event_total_tokens = event.tokens.total();
 
         total_tokens += event_total_tokens;
-        global_tokens.fresh_input += event.tokens.fresh_input;
-        global_tokens.cached_input += event.tokens.cached_input;
-        global_tokens.cache_write += event.tokens.cache_write;
-        global_tokens.output += event.tokens.output;
-        global_tokens.reasoning += event.tokens.reasoning;
+        global_tokens.add(&event.tokens);
         total_cost += cost;
         total_cache_savings += cache_savings;
         session_keys.insert(event.session_key.clone());
@@ -1094,7 +1030,6 @@ pub fn scan_all(window: TimeWindow, pricing: &PricingTable) -> UsageSnapshot {
     });
 
     UsageSnapshot {
-        window,
         start_date,
         end_date,
         tokens: global_tokens,

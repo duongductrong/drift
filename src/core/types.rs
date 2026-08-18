@@ -75,7 +75,6 @@ pub struct UsageEvent {
     pub timestamp_ms: i64,
     pub model_name: String,
     pub session_key: String,
-    pub working_dir: String,
     pub tokens: TokenBreakdown,
     pub reported_cost: Option<f64>,
     pub dedup_id: Option<String>,
@@ -182,7 +181,6 @@ impl TimeWindow {
 /// The full snapshot of historical usage data
 #[derive(Clone, Debug)]
 pub struct UsageSnapshot {
-    pub window: TimeWindow,
     pub start_date: chrono::NaiveDate,
     pub end_date: chrono::NaiveDate,
     pub tokens: TokenBreakdown,

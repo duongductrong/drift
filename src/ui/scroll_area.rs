@@ -17,15 +17,13 @@ use crate::theme::Theme;
 //       .child(expensive_content)
 //       .child(more_content)
 //
-// By default the scroll container fills its parent (`size_full()`), has
-// `px(20)` horizontal padding, and `px(48)` bottom padding so trailing content
-// never sits behind a footer.
+// The scroll container fills its parent (`size_full()`), has `px(20)`
+// horizontal padding, and `px(48)` bottom padding so trailing content never
+// sits behind a footer.
 //
-// The scrollbar thumb is shown by default: whenever the content overflows, a
+// The scrollbar thumb is always shown: whenever the content overflows, a
 // thumb rides the right edge, thickening while the pointer is over its track
-// and draggable to scroll. Callers that want a bare surface opt out with:
-//
-//   ScrollArea::new("my-scroll").show_thumb(false)
+// and draggable to scroll.
 //
 // Scroll position and pointer state are keyed to the area's id and kept in
 // GPUI element state, so callers hold nothing on their own view.
@@ -153,14 +151,17 @@ fn scroll_to(handle: &ScrollHandle, offset: Pixels) -> bool {
 
 // ── ScrollArea ────────────────────────────────────────────────────────────
 
+/// Vertical gap between children.
+const CHILD_GAP: f32 = 20.0;
+/// Horizontal padding on the scrolling surface.
+const SURFACE_PX: f32 = 20.0;
+/// Bottom inset so trailing content never sits behind a footer.
+const BOTTOM_INSET: f32 = 48.0;
+
 #[derive(IntoElement)]
 pub struct ScrollArea {
     id: &'static str,
     children: Vec<AnyElement>,
-    gap: f32,
-    px: f32,
-    pb: f32,
-    show_thumb: bool,
 }
 
 impl ScrollArea {
@@ -168,36 +169,7 @@ impl ScrollArea {
         Self {
             id,
             children: Vec::new(),
-            gap: 20.0,
-            px: 20.0,
-            pb: 48.0,
-            show_thumb: true,
         }
-    }
-
-    /// Override the vertical gap between children (default 20px).
-    pub fn gap(mut self, gap: f32) -> Self {
-        self.gap = gap;
-        self
-    }
-
-    /// Override horizontal padding (default 20px).
-    pub fn px(mut self, px: f32) -> Self {
-        self.px = px;
-        self
-    }
-
-    /// Override bottom inset (default 48px).
-    pub fn pb(mut self, pb: f32) -> Self {
-        self.pb = pb;
-        self
-    }
-
-    /// Show or hide the scrollbar thumb (default: `true`). Hiding it only
-    /// removes the overlay — wheel and trackpad scrolling still work.
-    pub fn show_thumb(mut self, show: bool) -> Self {
-        self.show_thumb = show;
-        self
     }
 
     /// Add a child element.
@@ -220,10 +192,10 @@ impl RenderOnce for ScrollArea {
             .min_h_0()
             .flex()
             .flex_col()
-            .gap(px(self.gap))
+            .gap(px(CHILD_GAP))
             .overflow_y_scroll()
-            .px(px(self.px))
-            .pb(px(self.pb))
+            .px(px(SURFACE_PX))
+            .pb(px(BOTTOM_INSET))
             .track_scroll(&scroll);
 
         for child in self.children {
@@ -238,9 +210,7 @@ impl RenderOnce for ScrollArea {
             .size_full()
             .min_h_0()
             .child(content)
-            .when(self.show_thumb, |container| {
-                container.child(scrollbar(scroll, state))
-            })
+            .child(scrollbar(scroll, state))
     }
 }
 
