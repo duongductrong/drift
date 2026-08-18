@@ -707,6 +707,26 @@ fn scan_antigravity(since_ms: i64) -> Vec<UsageEvent> {
     all_events
 }
 
+/// Extract the model name from an `executor_metadata` row's protobuf blob.
+/// Path: field 10 → field 1 → field 28 (string like "gemini-3-flash-agent")
+fn extract_agy_model_name(data: &[u8]) -> Option<String> {
+    let fields = decode_pb_fields(data);
+    let f10 = fields.get(&10)?;
+    let f10_bytes = f10.first()?.as_bytes()?;
+    let f10_sub = decode_pb_fields(f10_bytes);
+    let f1 = f10_sub.get(&1)?;
+    let f1_bytes = f1.first()?.as_bytes()?;
+    let f1_sub = decode_pb_fields(f1_bytes);
+    let f28 = f1_sub.get(&28)?;
+    let f28_bytes = f28.first()?.as_bytes()?;
+    let name = std::str::from_utf8(f28_bytes).ok()?;
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_owned())
+    }
+}
+
 /// Read usage events from a single Antigravity conversation database.
 fn read_antigravity_db(path: &Path, session_key: &str) -> Option<Vec<UsageEvent>> {
     let conn = rusqlite::Connection::open_with_flags(
@@ -714,6 +734,25 @@ fn read_antigravity_db(path: &Path, session_key: &str) -> Option<Vec<UsageEvent>
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .ok()?;
+
+    // Build model name lookup from executor_metadata.
+    // Path: data → field10 → field1 → field28 (string, e.g. "gemini-3-flash-agent")
+    // Each executor_metadata row covers all gen_metadata rows from its idx up to the
+    // next executor_metadata idx. We use bisect to find the matching model.
+    let mut model_entries: Vec<(i64, String)> = Vec::new();
+    if let Ok(mut em_stmt) = conn.prepare("SELECT idx, data FROM executor_metadata ORDER BY idx") {
+        if let Ok(em_rows) = em_stmt.query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+        }) {
+            for em_row in em_rows.flatten() {
+                let (em_idx, em_data) = em_row;
+                if let Some(model) = extract_agy_model_name(&em_data) {
+                    model_entries.push((em_idx, model));
+                }
+            }
+        }
+    }
+    let em_indices: Vec<i64> = model_entries.iter().map(|(idx, _)| *idx).collect();
 
     let mut events = Vec::new();
 
@@ -731,7 +770,18 @@ fn read_antigravity_db(path: &Path, session_key: &str) -> Option<Vec<UsageEvent>
         .ok()?;
 
     for row in rows.flatten() {
-        let (_idx, data, _size) = row;
+        let (gm_idx, data, _size) = row;
+
+        // Look up model name via bisect: find largest executor_metadata idx <= gm_idx
+        let model_name = {
+            let pos = em_indices.partition_point(|&i| i <= gm_idx);
+            if pos > 0 {
+                model_entries[pos - 1].1.clone()
+            } else {
+                "gemini-auto".to_owned()
+            }
+        };
+
         let fields = decode_pb_fields(&data);
 
         // Field 1 contains the execution telemetry sub-message
@@ -743,20 +793,13 @@ fn read_antigravity_db(path: &Path, session_key: &str) -> Option<Vec<UsageEvent>
         };
         let sub = decode_pb_fields(f1_bytes);
 
-        // Try sub-field 2 first (token usage sub-message), fall back to field 4
-        let usage_fields = sub
-            .get(&2)
+        // Token usage is in sub-field 4 (NOT field 2, which is a different sub-message)
+        let Some(usage) = sub
+            .get(&4)
             .and_then(|v| v.first())
             .and_then(|v| v.as_bytes())
             .map(|b| decode_pb_fields(b))
-            .or_else(|| {
-                sub.get(&4)
-                    .and_then(|v| v.first())
-                    .and_then(|v| v.as_bytes())
-                    .map(|b| decode_pb_fields(b))
-            });
-
-        let Some(usage) = usage_fields else {
+        else {
             continue;
         };
 
@@ -793,7 +836,7 @@ fn read_antigravity_db(path: &Path, session_key: &str) -> Option<Vec<UsageEvent>
             continue;
         }
 
-        // Extract request ID as dedup key from sub-field 11
+        // Extract request ID as dedup key from usage sub-field 11
         let dedup_id = usage
             .get(&11)
             .and_then(|v| v.first())
@@ -801,22 +844,28 @@ fn read_antigravity_db(path: &Path, session_key: &str) -> Option<Vec<UsageEvent>
             .and_then(|b| std::str::from_utf8(b).ok())
             .map(|s| format!("agy:{}:{}", session_key, s));
 
-        // Try to extract timestamp from sub-message field 1 (protobuf Timestamp)
+        // Timestamp is in sub.field9 → sub-field 4 → field 1 (epoch seconds)
         let timestamp_ms = sub
-            .get(&3)
+            .get(&9)
             .and_then(|v| v.first())
-            .and_then(|v| v.as_varint())
-            .map(|secs| secs as i64 * 1000)
-            .or_else(|| {
-                // Fall back to outer field 3 varint as a timestamp
-                fields
-                    .get(&3)
+            .and_then(|v| v.as_bytes())
+            .and_then(|b| {
+                let ts_fields = decode_pb_fields(b);
+                ts_fields
+                    .get(&4)
                     .and_then(|v| v.first())
-                    .and_then(|v| v.as_varint())
-                    .map(|secs| secs as i64 * 1000)
+                    .and_then(|v| v.as_bytes())
+                    .and_then(|b2| {
+                        let inner = decode_pb_fields(b2);
+                        inner
+                            .get(&1)
+                            .and_then(|v| v.first())
+                            .and_then(|v| v.as_varint())
+                    })
             })
+            .map(|secs| secs as i64 * 1000)
             .unwrap_or_else(|| {
-                // Last resort: use file mtime
+                // Fall back to file mtime
                 std::fs::metadata(path)
                     .ok()
                     .and_then(|m| m.modified().ok())
@@ -831,7 +880,7 @@ fn read_antigravity_db(path: &Path, session_key: &str) -> Option<Vec<UsageEvent>
         events.push(UsageEvent {
             provider: Provider::Antigravity,
             timestamp_ms,
-            model_name: "gemini-auto".to_owned(),
+            model_name,
             session_key: session_key.to_owned(),
             tokens,
             reported_cost: None,

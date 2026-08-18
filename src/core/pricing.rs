@@ -345,6 +345,9 @@ impl PricingTable {
         for name in [
             "gemini-2.5-flash", "gemini-3.0-flash", "gemini-3-flash",
             "gemini-3.7-flash", "gemini-auto",
+            // AGY-specific model name variants
+            "gemini-3-flash-agent", "gemini-3.6-flash-high",
+            "gemini-3.7-flash-high", "gemini-3.7-flash-tiered",
         ] {
             rates.insert(name.to_string(), gemini_flash_rate);
         }
@@ -355,7 +358,11 @@ impl PricingTable {
             cache_read_rate: 0.3125 / 1_000_000.0,
             cache_write_rate: 1.25 / 1_000_000.0,
         };
-        for name in ["gemini-2.5-pro", "gemini-3.0-pro", "gemini-3-pro"] {
+        for name in [
+            "gemini-2.5-pro", "gemini-3.0-pro", "gemini-3-pro",
+            // AGY-specific
+            "gemini-pro-agent", "gemini-3.1-pro-low",
+        ] {
             rates.insert(name.to_string(), gemini_pro_rate);
         }
 
@@ -368,6 +375,12 @@ impl PricingTable {
                 cache_write_rate: 0.0375 / 1_000_000.0,
             },
         );
+
+        // Claude models used via Antigravity (these should already match
+        // existing Claude pricing entries via prefix matching, but add
+        // explicit entries for AGY-specific naming)
+        // claude-opus-4-6-thinking → matches "claude-opus-4" prefix
+        // claude-sonnet-4-6 → matches "claude-sonnet-4" prefix
 
         Self { rates }
     }
