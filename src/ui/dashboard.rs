@@ -1,19 +1,22 @@
 use gpui::{div, prelude::*, px, Context, SharedString, Window};
-use crate::core::types::{UsageSnapshot, TimeWindow};
+use crate::core::types::{spans_multiple_months, Granularity, TimeWindow, UsageSnapshot};
 use crate::theme::Theme;
 use super::components::*;
-use super::daily_chart::DailyChart;
 use super::empty_state::EmptyState;
 use super::metric_tile::render_metric_strip;
 use super::model_row::ModelRow;
 use super::provider_row::ProviderRow;
 use super::scroll_area::ScrollArea;
 use super::skeleton::render_dashboard_skeleton;
-use super::time_window_picker::TimeWindowPicker;
+use super::usage_chart::UsageChart;
+use super::usage_filters::UsageFilters;
 
 /// Emitted when the user picks a different time window so the parent
 /// (`AppView`) can trigger a rescan. Carries no payload: the new window is
 /// already stored on `Dashboard::selected_window` before this is emitted.
+///
+/// Granularity changes deliberately emit nothing: they re-bucket data the
+/// snapshot already holds, so the switch never costs a rescan.
 #[derive(Clone, Debug)]
 pub struct WindowChanged;
 
@@ -22,6 +25,11 @@ impl gpui::EventEmitter<WindowChanged> for Dashboard {}
 pub struct Dashboard {
     pub snapshot: Option<UsageSnapshot>,
     pub selected_window: TimeWindow,
+    /// The granularity the user last asked for. Kept even while a range that
+    /// cannot honor it is selected, so returning to a longer range restores
+    /// the Monthly view rather than silently resetting it.
+    pub preferred_granularity: Granularity,
+    pub range_menu_open: bool,
     pub loading: bool,
 }
 
@@ -29,8 +37,24 @@ impl Dashboard {
     pub fn new() -> Self {
         Self {
             snapshot: None,
-            selected_window: TimeWindow::Last7Days,
+            // 30 days daily is the widest view that still shows every day as
+            // its own bar, and it spans two calendar months so the Monthly
+            // switch is live out of the box.
+            selected_window: TimeWindow::Last30Days,
+            preferred_granularity: Granularity::Daily,
+            range_menu_open: false,
             loading: false,
+        }
+    }
+
+    /// The granularity actually drawn: the preference, downgraded to `Daily`
+    /// when the active range sits inside one calendar month and Monthly would
+    /// collapse it to a single bar.
+    fn effective_granularity(&self, monthly_available: bool) -> Granularity {
+        if monthly_available {
+            self.preferred_granularity
+        } else {
+            Granularity::Daily
         }
     }
 }
@@ -64,42 +88,89 @@ impl Render for Dashboard {
 
         let snap = self.snapshot.as_ref().unwrap();
 
-        // ── Header row: range label + time window picker ───────────
-        let range_label = format!(
-            "{} – {}",
+        // ── Filter bar: range + aggregation, then what they resolve to ──
+        //
+        // Availability is read off the snapshot's own dates rather than
+        // recomputed from today, so the switch always describes the data on
+        // screen — including while a rescan for a new range is still in
+        // flight.
+        let monthly_available = spans_multiple_months(snap.start_date, snap.end_date);
+        let granularity = self.effective_granularity(monthly_available);
+
+        // Spells out the range → aggregation relationship in words, so the
+        // pill above never has to be decoded: "these dates, one bar per day".
+        let caption = format!(
+            "{} – {} · one bar per {}",
             snap.start_date.format("%b %d"),
-            snap.end_date.format("%b %d, %Y")
+            snap.end_date.format("%b %d, %Y"),
+            granularity.bucket_noun(),
         );
 
+        let filters = {
+            let weak = cx.entity().downgrade();
+            let select_window = weak.clone();
+            let select_granularity = weak.clone();
+            let toggle_menu = weak.clone();
+            let dismiss_menu = weak.clone();
+
+            UsageFilters::new(self.selected_window, granularity)
+                .monthly_available(monthly_available)
+                .menu_open(self.range_menu_open)
+                .on_select_window(move |tw, _window, cx| {
+                    let _ = select_window.update(cx, |this, cx| {
+                        this.range_menu_open = false;
+                        if this.selected_window != tw {
+                            this.selected_window = tw;
+                            // A different range means different events: only
+                            // this path costs a rescan.
+                            cx.emit(WindowChanged);
+                        }
+                        cx.notify();
+                    });
+                })
+                .on_select_granularity(move |g, _window, cx| {
+                    let _ = select_granularity.update(cx, |this, cx| {
+                        if this.preferred_granularity != g {
+                            this.preferred_granularity = g;
+                            // No rescan: the range, the snapshot and every
+                            // other panel stay exactly as they were.
+                            cx.notify();
+                        }
+                    });
+                })
+                .on_toggle_menu(move |_window, cx| {
+                    let _ = toggle_menu.update(cx, |this, cx| {
+                        this.range_menu_open = !this.range_menu_open;
+                        cx.notify();
+                    });
+                })
+                .on_dismiss_menu(move |_window, cx| {
+                    let _ = dismiss_menu.update(cx, |this, cx| {
+                        if this.range_menu_open {
+                            this.range_menu_open = false;
+                            cx.notify();
+                        }
+                    });
+                })
+        };
+
+        // The caption leads, the controls sit at the trailing edge: reading
+        // order is "here is the range on screen", then the pill that changes
+        // it. The caption takes the slack so the pill stays pinned right.
         let header = div()
             .flex()
             .items_center()
-            .gap(px(10.0))
+            .gap(px(12.0))
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_size(px(12.5))
-                    .text_color(theme.text_secondary)
-                    .child(SharedString::from(range_label)),
+                    .text_size(px(11.5))
+                    .text_color(theme.text_tertiary)
+                    .child(SharedString::from(caption)),
             )
-            .child({
-                let weak = cx.entity().downgrade();
-                TimeWindowPicker::new(
-                    self.selected_window,
-                    move |tw: TimeWindow, _window: &mut Window, cx: &mut gpui::App| {
-                        let _ = weak.update(cx, |this, cx| {
-                            if this.selected_window != tw {
-                                this.selected_window = tw;
-                                // Emit event so AppView triggers a rescan
-                                cx.emit(WindowChanged);
-                                cx.notify();
-                            }
-                        });
-                    },
-                )
-            });
+            .child(filters);
 
         // ── Headline stats ─────────────────────────────────────────
         let cost_str = SharedString::from(format_cost(snap.cost_usd));
@@ -115,7 +186,7 @@ impl Render for Dashboard {
             .child(StatCard::new("Events", events_str))
             .child(StatCard::new("Sessions", sessions_str));
 
-        // ── Provider share + Daily chart (side by side) ────────────
+        // ── Provider share + usage chart (side by side) ────────────
         let mut provider_section = div()
             .flex()
             .flex_col()
@@ -141,7 +212,7 @@ impl Render for Dashboard {
             );
         }
 
-        let chart = DailyChart::new(snap.daily.clone());
+        let chart = UsageChart::new(granularity.bucket(&snap.daily), granularity);
 
         let summary_chart_row = div()
             .flex()
@@ -251,5 +322,30 @@ impl Render for Dashboard {
             .child(model_section)
             .child(scan_info)
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_default_view_is_thirty_days_of_daily_bars() {
+        let dashboard = Dashboard::new();
+        assert_eq!(dashboard.selected_window, TimeWindow::Last30Days);
+        assert_eq!(dashboard.effective_granularity(true), Granularity::Daily);
+    }
+
+    #[test]
+    fn a_single_month_range_falls_back_to_daily_without_losing_the_preference() {
+        let mut dashboard = Dashboard::new();
+        dashboard.preferred_granularity = Granularity::Monthly;
+
+        // "This month" cannot honor Monthly, so the chart draws daily bars…
+        assert_eq!(dashboard.effective_granularity(false), Granularity::Daily);
+        // …but the preference is untouched, so a longer range restores it
+        // instead of quietly resetting the user's choice.
+        assert_eq!(dashboard.preferred_granularity, Granularity::Monthly);
+        assert_eq!(dashboard.effective_granularity(true), Granularity::Monthly);
     }
 }

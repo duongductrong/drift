@@ -1,23 +1,51 @@
+use chrono::Datelike;
 use gpui::*;
 use crate::theme::Theme;
-use crate::core::types::{DailyAggregate, Provider};
+use crate::core::types::{Granularity, PeriodBucket, Provider};
 use crate::ui::components::provider_color;
 
 /// Chart height matching Waku's `h-56` plot.
 const CHART_HEIGHT: f32 = 224.0;
 /// Y-axis label gutter width.
 const CHART_GUTTER: f32 = 56.0;
+/// Gap between adjacent bars.
+const BAR_GAP: f32 = 2.0;
+/// Ceiling on a single bar's width. Without it a monthly rollup of a 90-day
+/// range spreads three bars across the whole plot, which reads as a block of
+/// color rather than a series. Capped bars are centered instead of stretched.
+const MAX_BAR_WIDTH: f32 = 44.0;
 
-/// A daily cost bar chart rendered with GPUI's canvas element.
+/// A stacked cost bar chart over the active time window. One bar is one day or
+/// one calendar month, per the [`Granularity`] it is handed.
 #[derive(IntoElement)]
-pub struct DailyChart {
-    daily: Vec<DailyAggregate>,
+pub struct UsageChart {
+    buckets: Vec<PeriodBucket>,
+    granularity: Granularity,
 }
 
-impl DailyChart {
-    pub fn new(daily: Vec<DailyAggregate>) -> Self {
-        Self { daily }
+impl UsageChart {
+    pub fn new(buckets: Vec<PeriodBucket>, granularity: Granularity) -> Self {
+        Self {
+            buckets,
+            granularity,
+        }
     }
+}
+
+/// Width of one bar and the x where the group starts, for a plot `width` wide.
+///
+/// Shared by the canvas and the x-axis labels so the two stay in step: both
+/// resolve to `flex-basis: 0` cells capped at [`MAX_BAR_WIDTH`] and centered.
+fn bar_layout(width: Pixels, count: usize) -> (Pixels, Pixels) {
+    if count == 0 {
+        return (px(0.0), px(0.0));
+    }
+    let gaps = px(BAR_GAP) * count.saturating_sub(1) as f32;
+    let available = width - gaps;
+    let bar_w = (available / count as f32).min(px(MAX_BAR_WIDTH)).max(px(1.0));
+    let content_w = bar_w * count as f32 + gaps;
+    let x_offset = ((width - content_w) / 2.0).max(px(0.0));
+    (bar_w, x_offset)
 }
 
 /// Compute a nice round ceiling and tick positions for a chart axis.
@@ -56,7 +84,7 @@ fn format_usd(value: f64) -> String {
     }
 }
 
-impl RenderOnce for DailyChart {
+impl RenderOnce for UsageChart {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = Theme::current(cx);
 
@@ -95,15 +123,20 @@ impl RenderOnce for DailyChart {
                     .text_size(px(12.5))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text)
-                    .child("Daily Cost"),
+                    // "Daily Cost" / "Monthly Cost" — the chart names the
+                    // aggregation it is currently drawing.
+                    .child(SharedString::from(format!(
+                        "{} Cost",
+                        self.granularity.label()
+                    ))),
             )
             .child(legend);
 
         // ── Compute scale ───────────────────────────────────────────
         let peak = self
-            .daily
+            .buckets
             .iter()
-            .map(|d| d.cost_usd)
+            .map(|b| b.cost_usd)
             .fold(0.0_f64, f64::max);
         let (max_val, ticks) = nice_scale(peak, 4);
 
@@ -136,7 +169,7 @@ impl RenderOnce for DailyChart {
         }
 
         // ── Plot canvas ─────────────────────────────────────────────
-        let daily_data = self.daily.clone();
+        let bucket_data = self.buckets.clone();
         let chart_colors: Vec<Hsla> = Provider::ALL
             .iter()
             .map(|p| provider_color(&theme, *p))
@@ -164,19 +197,16 @@ impl RenderOnce for DailyChart {
                     ));
                 }
 
-                if daily_data.is_empty() || max_val <= 0.0 {
+                if bucket_data.is_empty() || max_val <= 0.0 {
                     return;
                 }
 
-                let day_count = daily_data.len();
-                let gap = px(2.0);
-                let available = bounds.size.width - gap * (day_count.saturating_sub(1)) as f32;
-                let bar_w = (available / day_count as f32).max(px(1.0));
-                let mut x = bounds.origin.x;
+                let (bar_w, x_offset) = bar_layout(bounds.size.width, bucket_data.len());
+                let mut x = bounds.origin.x + x_offset;
 
-                for day in &daily_data {
-                    // Collect per-provider costs and colors for this day
-                    let segments: Vec<(f64, Hsla)> = day
+                for bucket in &bucket_data {
+                    // Collect per-provider costs and colors for this bucket
+                    let segments: Vec<(f64, Hsla)> = bucket
                         .by_provider
                         .iter()
                         .enumerate()
@@ -209,30 +239,12 @@ impl RenderOnce for DailyChart {
                             ));
                         }
                     }
-                    x = x + bar_w + gap;
+                    x = x + bar_w + px(BAR_GAP);
                 }
             },
         )
         .flex_1()
         .h(px(CHART_HEIGHT));
-
-        // ── X-axis labels ───────────────────────────────────────────
-        let mut x_axis = div()
-            .pl(px(CHART_GUTTER + 8.0))
-            .flex()
-            .justify_between()
-            .text_size(px(9.5))
-            .text_color(theme.text_tertiary);
-
-        if !self.daily.is_empty() {
-            let first = self.daily.first().unwrap().date;
-            let mid = self.daily[self.daily.len() / 2].date;
-            let last = self.daily.last().unwrap().date;
-            x_axis = x_axis
-                .child(SharedString::from(first.format("%b %d").to_string()))
-                .child(SharedString::from(mid.format("%b %d").to_string()))
-                .child(SharedString::from(last.format("%b %d").to_string()));
-        }
 
         // ── Compose ─────────────────────────────────────────────────
         div()
@@ -243,6 +255,63 @@ impl RenderOnce for DailyChart {
             .gap(px(10.0))
             .child(header)
             .child(div().flex().child(gutter).child(plot))
-            .child(x_axis)
+            .child(self.x_axis(&theme))
+    }
+}
+
+impl UsageChart {
+    /// X-axis labels.
+    ///
+    /// Monthly bars are few and wide, so every bucket gets a label sitting in a
+    /// cell that mirrors the bar layout. A daily series has far too many bars
+    /// for that, so it falls back to first/middle/last markers spread across
+    /// the plot.
+    fn x_axis(&self, theme: &Theme) -> impl IntoElement {
+        let row = div()
+            .pl(px(CHART_GUTTER))
+            .text_size(px(9.5))
+            .text_color(theme.text_tertiary);
+
+        if self.buckets.is_empty() {
+            return row;
+        }
+
+        match self.granularity {
+            Granularity::Monthly => {
+                // Disambiguate the month names only when the range straddles a
+                // year boundary (Dec → Jan).
+                let multi_year = self.buckets.first().map(|b| b.start.year())
+                    != self.buckets.last().map(|b| b.start.year());
+                let fmt = if multi_year { "%b %y" } else { "%b" };
+
+                let mut row = row.flex().justify_center().gap(px(BAR_GAP));
+                for bucket in &self.buckets {
+                    row = row.child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .max_w(px(MAX_BAR_WIDTH))
+                            .overflow_hidden()
+                            .text_center()
+                            .child(SharedString::from(bucket.start.format(fmt).to_string())),
+                    );
+                }
+                row
+            }
+            Granularity::Daily => {
+                let mut marks = vec![
+                    self.buckets.first().unwrap().start,
+                    self.buckets[self.buckets.len() / 2].start,
+                    self.buckets.last().unwrap().start,
+                ];
+                marks.dedup();
+
+                let mut row = row.flex().justify_between();
+                for date in marks {
+                    row = row.child(SharedString::from(date.format("%b %d").to_string()));
+                }
+                row
+            }
+        }
     }
 }
