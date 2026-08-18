@@ -1,13 +1,14 @@
 use gpui::{div, prelude::*, px, Hsla, SharedString, Window, App};
 use crate::theme::Theme;
 
-/// A model breakdown row with colored provider dot, name, cost, and tokens.
+/// A model breakdown row: colored provider dot, name, then the model's value
+/// in the metric the page is read in, with the other metric trailing it.
 #[derive(IntoElement)]
 pub struct ModelRow {
     id: SharedString,
     name: SharedString,
-    cost: SharedString,
-    tokens: SharedString,
+    value: SharedString,
+    secondary: SharedString,
     provider_color: Hsla,
 }
 
@@ -15,15 +16,15 @@ impl ModelRow {
     pub fn new(
         id: impl Into<SharedString>,
         name: impl Into<SharedString>,
-        cost: impl Into<SharedString>,
-        tokens: impl Into<SharedString>,
+        value: impl Into<SharedString>,
+        secondary: impl Into<SharedString>,
         provider_color: Hsla,
     ) -> Self {
         Self {
             id: id.into(),
             name: name.into(),
-            cost: cost.into(),
-            tokens: tokens.into(),
+            value: value.into(),
+            secondary: secondary.into(),
             provider_color,
         }
     }
@@ -67,7 +68,7 @@ impl RenderOnce for ModelRow {
                     .text_color(theme.text_secondary)
                     .child(SharedString::from(format!(
                         "{} · {}",
-                        self.cost, self.tokens
+                        self.value, self.secondary
                     ))),
             )
     }

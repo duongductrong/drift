@@ -1,8 +1,13 @@
+use std::sync::Arc;
+use std::time::Duration;
+
 use chrono::Datelike;
+use gpui::prelude::*;
 use gpui::*;
 use crate::theme::Theme;
-use crate::core::types::{Granularity, PeriodBucket, Provider};
-use crate::ui::components::provider_color;
+use crate::core::types::{UsageMetric, Granularity, PeriodBucket, Provider};
+use crate::ui::components::{format_metric, format_metric_compact, provider_color};
+use crate::ui::tooltip::{Tooltip, TooltipRow};
 
 /// Chart height matching Waku's `h-56` plot.
 const CHART_HEIGHT: f32 = 224.0;
@@ -14,21 +19,42 @@ const BAR_GAP: f32 = 2.0;
 /// range spreads three bars across the whole plot, which reads as a block of
 /// color rather than a series. Capped bars are centered instead of stretched.
 const MAX_BAR_WIDTH: f32 = 44.0;
+/// How long the pointer has to rest on a bar before its tooltip appears.
+/// Reading a chart is a pointing gesture, not a "did you mean" hint: GPUI's
+/// half-second default reads as lag when sweeping across a month of bars.
+const TOOLTIP_DELAY: Duration = Duration::from_millis(60);
+/// Height of the Cost / Tokens switch below the plot.
+const SWITCH_HEIGHT: f32 = 22.0;
 
-/// A stacked cost bar chart over the active time window. One bar is one day or
-/// one calendar month, per the [`Granularity`] it is handed.
+type MetricCallback = Arc<dyn Fn(UsageMetric, &mut Window, &mut App) + Send + Sync>;
+
+/// A stacked bar chart over the active time window. One bar is one day or one
+/// calendar month, per the [`Granularity`] it is handed, measured in whichever
+/// [`UsageMetric`] the page is currently read in.
 #[derive(IntoElement)]
 pub struct UsageChart {
     buckets: Vec<PeriodBucket>,
     granularity: Granularity,
+    metric: UsageMetric,
+    on_select_metric: Option<MetricCallback>,
 }
 
 impl UsageChart {
-    pub fn new(buckets: Vec<PeriodBucket>, granularity: Granularity) -> Self {
+    pub fn new(buckets: Vec<PeriodBucket>, granularity: Granularity, metric: UsageMetric) -> Self {
         Self {
             buckets,
             granularity,
+            metric,
+            on_select_metric: None,
         }
+    }
+
+    pub fn on_select_metric(
+        mut self,
+        handler: impl Fn(UsageMetric, &mut Window, &mut App) + Send + Sync + 'static,
+    ) -> Self {
+        self.on_select_metric = Some(Arc::new(handler));
+        self
     }
 }
 
@@ -72,21 +98,10 @@ fn nice_scale(peak: f64, target_ticks: usize) -> (f64, Vec<f64>) {
     (max, ticks)
 }
 
-fn format_usd(value: f64) -> String {
-    if value >= 1.0 {
-        format!("${:.2}", value)
-    } else if value >= 0.01 {
-        format!("${:.3}", value)
-    } else if value > 0.0 {
-        format!("${:.4}", value)
-    } else {
-        "$0".to_owned()
-    }
-}
-
 impl RenderOnce for UsageChart {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = Theme::current(cx);
+        let metric = self.metric;
 
         // ── Header: title + legend ──────────────────────────────────
         let mut legend = div().flex().items_center().gap(px(14.0));
@@ -123,20 +138,43 @@ impl RenderOnce for UsageChart {
                     .text_size(px(12.5))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text)
-                    // "Daily Cost" / "Monthly Cost" — the chart names the
-                    // aggregation it is currently drawing.
+                    // "Daily Cost" / "Monthly Tokens" — the chart names both the
+                    // aggregation and the unit it is currently drawing.
                     .child(SharedString::from(format!(
-                        "{} Cost",
-                        self.granularity.label()
+                        "{} {}",
+                        self.granularity.label(),
+                        metric.label()
                     ))),
             )
             .child(legend);
 
-        // ── Compute scale ───────────────────────────────────────────
-        let peak = self
+        // ── Series + scale ──────────────────────────────────────────
+        //
+        // Segments are resolved once, in the selected metric's unit, and the
+        // scale is taken from their sums: the axis then describes exactly what
+        // is painted rather than a total the stack may not add up to.
+        let chart_colors: Vec<Hsla> = Provider::ALL
+            .iter()
+            .map(|p| provider_color(&theme, *p))
+            .collect();
+        let series: Vec<Vec<(f64, Hsla)>> = self
             .buckets
             .iter()
-            .map(|b| b.cost_usd)
+            .map(|bucket| {
+                bucket
+                    .by_provider
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, pm)| {
+                        let value = metric.of_period(pm);
+                        (value > 0.0 && i < chart_colors.len()).then(|| (value, chart_colors[i]))
+                    })
+                    .collect()
+            })
+            .collect();
+        let peak = series
+            .iter()
+            .map(|stack| stack.iter().map(|(v, _)| *v).sum::<f64>())
             .fold(0.0_f64, f64::max);
         let (max_val, ticks) = nice_scale(peak, 4);
 
@@ -163,17 +201,12 @@ impl RenderOnce for UsageChart {
                     .child(SharedString::from(if tick == 0.0 {
                         "0".to_owned()
                     } else {
-                        format_usd(tick)
+                        format_metric_compact(metric, tick)
                     })),
             );
         }
 
         // ── Plot canvas ─────────────────────────────────────────────
-        let bucket_data = self.buckets.clone();
-        let chart_colors: Vec<Hsla> = Provider::ALL
-            .iter()
-            .map(|p| provider_color(&theme, *p))
-            .collect();
         let grid_color = theme.border;
 
         let plot = canvas(
@@ -197,37 +230,23 @@ impl RenderOnce for UsageChart {
                     ));
                 }
 
-                if bucket_data.is_empty() || max_val <= 0.0 {
+                if series.is_empty() || max_val <= 0.0 {
                     return;
                 }
 
-                let (bar_w, x_offset) = bar_layout(bounds.size.width, bucket_data.len());
+                let (bar_w, x_offset) = bar_layout(bounds.size.width, series.len());
                 let mut x = bounds.origin.x + x_offset;
 
-                for bucket in &bucket_data {
-                    // Collect per-provider costs and colors for this bucket
-                    let segments: Vec<(f64, Hsla)> = bucket
-                        .by_provider
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(i, pm)| {
-                            if pm.cost_usd > 0.0 && i < chart_colors.len() {
-                                Some((pm.cost_usd, chart_colors[i]))
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
-
-                    let total: f64 = segments.iter().map(|(c, _)| c).sum();
+                for segments in &series {
+                    let total: f64 = segments.iter().map(|(v, _)| v).sum();
 
                     if total > 0.0 {
                         let total_h = bounds.size.height * (total / max_val) as f32;
                         let mut y_offset = bounds.bottom();
 
                         // Draw stacked bars bottom-to-top
-                        for (cost, color) in &segments {
-                            let seg_h = total_h * (*cost / total) as f32;
+                        for (value, color) in segments {
+                            let seg_h = total_h * (*value / total) as f32;
                             y_offset = y_offset - seg_h;
                             window.paint_quad(quad(
                                 Bounds::new(point(x, y_offset), size(bar_w, seg_h)),
@@ -243,8 +262,17 @@ impl RenderOnce for UsageChart {
                 }
             },
         )
-        .flex_1()
-        .h(px(CHART_HEIGHT));
+        .w_full()
+        .h_full();
+
+        // The canvas paints; the overlay sitting on top of it is what the
+        // pointer can actually reach.
+        let plot_stack = div()
+            .relative()
+            .flex_1()
+            .h(px(CHART_HEIGHT))
+            .child(plot)
+            .child(self.hover_overlay(&theme));
 
         // ── Compose ─────────────────────────────────────────────────
         div()
@@ -254,12 +282,130 @@ impl RenderOnce for UsageChart {
             .flex_col()
             .gap(px(10.0))
             .child(header)
-            .child(div().flex().child(gutter).child(plot))
+            .child(div().flex().child(gutter).child(plot_stack))
             .child(self.x_axis(&theme))
+            .child(self.metric_switch(&theme))
     }
 }
 
 impl UsageChart {
+    /// Transparent hit targets, one per bar, laid over the plot.
+    ///
+    /// The bars are painted into a canvas, which has nothing to hover: this row
+    /// mirrors the bar layout with real elements so each period can carry a
+    /// column highlight and a tooltip. The cells run the full height of the
+    /// plot, so a bar only a few pixels tall is still easy to hit.
+    fn hover_overlay(&self, theme: &Theme) -> impl IntoElement {
+        let metric = self.metric;
+        // A daily bar names its day; a monthly bar names the month it rolls up.
+        let title_fmt = match self.granularity {
+            Granularity::Daily => "%b %d, %Y",
+            Granularity::Monthly => "%B %Y",
+        };
+
+        let mut overlay = div()
+            .absolute()
+            .top(px(0.0))
+            .left(px(0.0))
+            .size_full()
+            .flex()
+            .justify_center()
+            .gap(px(BAR_GAP));
+
+        for (i, bucket) in self.buckets.iter().enumerate() {
+            let rows: Vec<TooltipRow> = Provider::ALL
+                .iter()
+                .zip(&bucket.by_provider)
+                .filter_map(|(provider, pm)| {
+                    let value = metric.of_period(pm);
+                    (value > 0.0).then(|| TooltipRow {
+                        color: provider_color(theme, *provider),
+                        label: provider.label().into(),
+                        value: format_metric(metric, value).into(),
+                    })
+                })
+                .collect();
+
+            let total: f64 = bucket.by_provider.iter().map(|pm| metric.of_period(pm)).sum();
+            let headline = if total > 0.0 {
+                format_metric(metric, total)
+            } else {
+                "No usage".to_owned()
+            };
+            let title = SharedString::from(bucket.start.format(title_fmt).to_string());
+
+            overlay = overlay.child(
+                div()
+                    .id(SharedString::from(format!("chart-bar-{}", i)))
+                    .flex_1()
+                    .min_w_0()
+                    .max_w(px(MAX_BAR_WIDTH))
+                    .h_full()
+                    .rounded(px(2.0))
+                    .cursor_default()
+                    .hover(|style| style.bg(theme.overlay))
+                    .tooltip(Tooltip::detail(title, headline, rows))
+                    .tooltip_show_delay(TOOLTIP_DELAY),
+            );
+        }
+
+        overlay
+    }
+
+    /// The Cost / Tokens switch.
+    ///
+    /// It sits under the plot's trailing corner rather than in the header: the
+    /// header already carries the title and the provider legend, and the choice
+    /// of unit reads as a footnote about the axis, not a third thing to scan on
+    /// the way in. Styled as the same segmented pill as the Daily/Monthly
+    /// switch, because it is the same kind of choice.
+    fn metric_switch(&self, theme: &Theme) -> impl IntoElement {
+        let mut segments = div()
+            .flex()
+            .items_center()
+            .overflow_hidden()
+            .rounded(px(6.0))
+            .border_1()
+            .border_color(theme.border_strong);
+
+        for option in UsageMetric::ALL {
+            let is_selected = option == self.metric;
+            let on_select = self.on_select_metric.clone();
+
+            segments = segments.child(
+                div()
+                    .id(SharedString::from(format!("metric-{}", option.label())))
+                    .h(px(SWITCH_HEIGHT))
+                    .px(px(9.0))
+                    .flex()
+                    .items_center()
+                    .cursor_default()
+                    .text_size(px(10.0))
+                    .bg(if is_selected {
+                        theme.overlay_strong
+                    } else {
+                        transparent_black()
+                    })
+                    .text_color(if is_selected {
+                        theme.text
+                    } else {
+                        theme.text_secondary
+                    })
+                    .when(!is_selected, |el| {
+                        el.hover(|style| style.text_color(theme.text))
+                    })
+                    .child(option.label())
+                    .on_click(move |_event, window, cx| {
+                        if let Some(handler) = &on_select {
+                            handler(option, window, cx);
+                        }
+                    }),
+            );
+        }
+
+        div().flex().justify_end().child(segments)
+    }
+
     /// X-axis labels.
     ///
     /// Monthly bars are few and wide, so every bucket gets a label sitting in a

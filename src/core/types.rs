@@ -281,6 +281,88 @@ pub struct PeriodBucket {
     pub by_provider: Vec<ProviderMetrics>,
 }
 
+/// Which quantity the usage view is measured in.
+///
+/// Cost and tokens are the same events measured two ways: cost is what the
+/// usage was billed at, tokens is how much work it stands for. A cheap model
+/// can top the token ranking while barely showing in the cost one, so the
+/// metric is a lens over data already on screen: every panel reads this one
+/// value, and switching it re-renders the page without touching the scanner.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UsageMetric {
+    Cost,
+    Tokens,
+}
+
+impl UsageMetric {
+    pub const ALL: [UsageMetric; 2] = [UsageMetric::Cost, UsageMetric::Tokens];
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            UsageMetric::Cost => "Cost",
+            UsageMetric::Tokens => "Tokens",
+        }
+    }
+
+    /// Headline wording, for the stat card that leads the page.
+    pub fn summary_label(&self) -> &'static str {
+        match self {
+            UsageMetric::Cost => "Total Cost",
+            UsageMetric::Tokens => "Total Tokens",
+        }
+    }
+
+    /// The metric this one is not. Every panel that leads with the selected
+    /// metric quotes this one underneath, so switching never hides a number —
+    /// it only decides which of the two is doing the ranking.
+    pub fn other(&self) -> Self {
+        match self {
+            UsageMetric::Cost => UsageMetric::Tokens,
+            UsageMetric::Tokens => UsageMetric::Cost,
+        }
+    }
+
+    /// One provider's share of a chart bucket. Tokens widen to `f64` so a
+    /// bar's segments, its total and the axis all divide alike.
+    pub fn of_period(&self, metrics: &ProviderMetrics) -> f64 {
+        match self {
+            UsageMetric::Cost => metrics.cost_usd,
+            UsageMetric::Tokens => metrics.total_tokens as f64,
+        }
+    }
+
+    pub fn of_provider(&self, summary: &ProviderSummary) -> f64 {
+        match self {
+            UsageMetric::Cost => summary.cost_usd,
+            UsageMetric::Tokens => summary.total_tokens as f64,
+        }
+    }
+
+    /// A provider's share of the whole in this metric's terms — what its share
+    /// bar is drawn from. The two fractions differ sharply when a provider is
+    /// cheap per token, which is exactly what the switch is there to show.
+    pub fn share_of(&self, summary: &ProviderSummary) -> f64 {
+        match self {
+            UsageMetric::Cost => summary.cost_fraction,
+            UsageMetric::Tokens => summary.token_fraction,
+        }
+    }
+
+    pub fn of_model(&self, model: &ModelAggregate) -> f64 {
+        match self {
+            UsageMetric::Cost => model.cost_usd,
+            UsageMetric::Tokens => model.total_tokens as f64,
+        }
+    }
+
+    pub fn of_snapshot(&self, snapshot: &UsageSnapshot) -> f64 {
+        match self {
+            UsageMetric::Cost => snapshot.cost_usd,
+            UsageMetric::Tokens => snapshot.total_tokens as f64,
+        }
+    }
+}
+
 /// Whether a monthly rollup of this range would yield more than one bar.
 ///
 /// A range that sits inside one calendar month collapses to a single bar under
@@ -399,6 +481,35 @@ mod tests {
     fn empty_input_produces_no_buckets() {
         assert!(Granularity::Monthly.bucket(&[]).is_empty());
         assert!(Granularity::Daily.bucket(&[]).is_empty());
+    }
+
+    #[test]
+    fn a_metric_reads_the_same_bucket_in_its_own_unit() {
+        let daily = vec![day("2026-08-01", 2.0, 1.0)];
+        let bucket = &Granularity::Daily.bucket(&daily)[0];
+        let claude = &bucket.by_provider[Provider::Claude.index()];
+
+        assert_eq!(UsageMetric::Cost.of_period(claude), 2.0);
+        assert_eq!(UsageMetric::Tokens.of_period(claude), 2000.0);
+    }
+
+    #[test]
+    fn a_provider_ranks_differently_under_each_metric() {
+        // A provider can be a rounding error on the bill and still be most of
+        // the work — the whole reason the page can be read either way.
+        let cheap = ProviderSummary {
+            provider: Provider::Codex,
+            cost_usd: 1.0,
+            total_tokens: 900,
+            cost_fraction: 0.1,
+            token_fraction: 0.9,
+        };
+
+        assert_eq!(UsageMetric::Cost.of_provider(&cheap), 1.0);
+        assert_eq!(UsageMetric::Tokens.of_provider(&cheap), 900.0);
+        assert_eq!(UsageMetric::Cost.share_of(&cheap), 0.1);
+        assert_eq!(UsageMetric::Tokens.share_of(&cheap), 0.9);
+        assert_eq!(UsageMetric::Cost.other(), UsageMetric::Tokens);
     }
 
     #[test]

@@ -1,5 +1,7 @@
 use gpui::{div, prelude::*, px, Context, SharedString, Window};
-use crate::core::types::{spans_multiple_months, Granularity, TimeWindow, UsageSnapshot};
+use crate::core::types::{
+    spans_multiple_months, Granularity, TimeWindow, UsageMetric, UsageSnapshot,
+};
 use crate::settings::Settings;
 use crate::theme::Theme;
 use super::components::*;
@@ -30,6 +32,11 @@ pub struct Dashboard {
     /// cannot honor it is selected, so returning to a longer range restores
     /// the Monthly view rather than silently resetting it.
     pub preferred_granularity: Granularity,
+    /// The unit the whole view is read in — the chart, the headline stats, and
+    /// the way the provider and model lists are valued and ranked. Purely a
+    /// view choice over the snapshot already in hand, so switching it costs a
+    /// re-render and nothing more.
+    pub metric: UsageMetric,
     pub range_menu_open: bool,
     pub loading: bool,
 }
@@ -44,6 +51,8 @@ impl Dashboard {
             snapshot: None,
             selected_window: window,
             preferred_granularity: Granularity::Daily,
+            // Cost leads: it is the question most people open the app with.
+            metric: UsageMetric::Cost,
             range_menu_open: false,
             loading: false,
         }
@@ -104,11 +113,13 @@ impl Render for Dashboard {
 
         // Spells out the range → aggregation relationship in words, so the
         // pill above never has to be decoded: "these dates, one bar per day".
+        let metric = self.metric;
         let caption = format!(
-            "{} – {} · one bar per {}",
+            "{} – {} · one bar per {} · measured in {}",
             snap.start_date.format("%b %d"),
             snap.end_date.format("%b %d, %Y"),
             granularity.bucket_noun(),
+            metric.label().to_lowercase(),
         );
 
         let filters = {
@@ -178,18 +189,33 @@ impl Render for Dashboard {
             .child(filters);
 
         // ── Headline stats ─────────────────────────────────────────
-        let cost_str = SharedString::from(format_cost(snap.cost_usd));
-        let tokens_str = SharedString::from(format_tokens(snap.total_tokens));
-        let events_str = SharedString::from(snap.event_count.to_string());
-        let sessions_str = SharedString::from(snap.session_count.to_string());
-
+        //
+        // The selected metric leads and is marked active; its counterpart sits
+        // right beside it, because switching should re-rank the page, not hide
+        // half of what it knows.
+        let other = metric.other();
         let stat_cards = div()
             .flex()
             .gap(px(12.0))
-            .child(StatCard::new("Total Cost", cost_str))
-            .child(StatCard::new("Tokens", tokens_str))
-            .child(StatCard::new("Events", events_str))
-            .child(StatCard::new("Sessions", sessions_str));
+            .child(
+                StatCard::new(
+                    metric.summary_label(),
+                    SharedString::from(format_metric(metric, metric.of_snapshot(snap))),
+                )
+                .active(true),
+            )
+            .child(StatCard::new(
+                other.summary_label(),
+                SharedString::from(format_metric(other, other.of_snapshot(snap))),
+            ))
+            .child(StatCard::new(
+                "Events",
+                SharedString::from(format_count(snap.event_count)),
+            ))
+            .child(StatCard::new(
+                "Sessions",
+                SharedString::from(format_count(snap.session_count)),
+            ));
 
         // ── Provider share + usage chart (side by side) ────────────
         let mut provider_section = div()
@@ -198,26 +224,52 @@ impl Render for Dashboard {
             .gap(px(10.0))
             .w(px(300.0))
             .flex_none()
-            .child(SectionHeader::new("By Provider"));
+            .child(SectionHeader::new("By Provider").hint(metric.label()));
 
-        for prov in &snap.by_provider {
+        // Ranked by the selected metric rather than by the scanner's cost
+        // order: under Tokens the cheap-but-busy provider belongs at the top.
+        let mut providers: Vec<_> = snap.by_provider.iter().collect();
+        providers.sort_by(|a, b| {
+            metric
+                .of_provider(b)
+                .partial_cmp(&metric.of_provider(a))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        for prov in providers {
             let color = provider_color(&theme, prov.provider);
+            let share = metric.share_of(prov);
             provider_section = provider_section.child(
                 ProviderRow::new(
                     prov.provider.label(),
-                    format_cost(prov.cost_usd),
-                    prov.cost_fraction as f32,
+                    format_metric(metric, metric.of_provider(prov)),
+                    share as f32,
                     color,
                 )
                 .detail(format!(
                     "{} share · {}",
-                    format_percent(prov.cost_fraction),
-                    format_tokens(prov.total_tokens)
+                    format_percent(share),
+                    format_metric(other, other.of_provider(prov))
                 )),
             );
         }
 
-        let chart = UsageChart::new(granularity.bucket(&snap.daily), granularity);
+        let chart = {
+            let select_metric = cx.entity().downgrade();
+
+            UsageChart::new(granularity.bucket(&snap.daily), granularity, metric)
+                .on_select_metric(move |selected, _window, cx| {
+                    let _ = select_metric.update(cx, |this, cx| {
+                        if this.metric != selected {
+                            this.metric = selected;
+                            // Same events, different unit: like granularity,
+                            // this re-renders the page and never reaches the
+                            // scanner.
+                            cx.notify();
+                        }
+                    });
+                })
+        };
 
         let summary_chart_row = div()
             .flex()
@@ -294,15 +346,36 @@ impl Render for Dashboard {
             .flex()
             .flex_col()
             .gap(px(2.0))
-            .child(SectionHeader::new("By Model"));
+            .child(SectionHeader::new("By Model").hint(SharedString::from(format!(
+                "Top {} by {}",
+                model_rows.min(snap.by_model.len()),
+                metric.label().to_lowercase()
+            ))));
 
-        for (i, model) in snap.by_model.iter().take(model_rows).enumerate() {
+        // Same reordering as the provider list: "top models" has to mean top
+        // by whatever the page is currently measuring, or the truncation to
+        // `model_rows` quietly drops the rows that matter.
+        let mut models: Vec<_> = snap.by_model.iter().collect();
+        models.sort_by(|a, b| {
+            metric
+                .of_model(b)
+                .partial_cmp(&metric.of_model(a))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| {
+                    other
+                        .of_model(b)
+                        .partial_cmp(&other.of_model(a))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+        });
+
+        for (i, model) in models.into_iter().take(model_rows).enumerate() {
             let color = provider_color(&theme, model.provider);
             model_section = model_section.child(ModelRow::new(
                 format!("model-{}", i),
                 model.model_name.clone(),
-                format_cost(model.cost_usd),
-                format_tokens(model.total_tokens),
+                format_metric(metric, metric.of_model(model)),
+                format_metric(other, other.of_model(model)),
                 color,
             ));
         }
@@ -339,6 +412,11 @@ mod tests {
         let dashboard = Dashboard::new(TimeWindow::Last30Days);
         assert_eq!(dashboard.selected_window, TimeWindow::Last30Days);
         assert_eq!(dashboard.effective_granularity(true), Granularity::Daily);
+    }
+
+    #[test]
+    fn the_view_opens_measured_in_cost() {
+        assert_eq!(Dashboard::new(TimeWindow::Last30Days).metric, UsageMetric::Cost);
     }
 
     #[test]
