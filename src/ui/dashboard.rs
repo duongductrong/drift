@@ -1,5 +1,6 @@
 use gpui::{div, prelude::*, px, Context, SharedString, Window};
 use crate::core::types::{spans_multiple_months, Granularity, TimeWindow, UsageSnapshot};
+use crate::settings::Settings;
 use crate::theme::Theme;
 use super::components::*;
 use super::empty_state::EmptyState;
@@ -34,13 +35,14 @@ pub struct Dashboard {
 }
 
 impl Dashboard {
-    pub fn new() -> Self {
+    /// Opens on `window` — the range the user set as their default. 30 days
+    /// daily is the shipped default: the widest view that still shows every day
+    /// as its own bar, spanning two calendar months so the Monthly switch is
+    /// live out of the box.
+    pub fn new(window: TimeWindow) -> Self {
         Self {
             snapshot: None,
-            // 30 days daily is the widest view that still shows every day as
-            // its own bar, and it spans two calendar months so the Monthly
-            // switch is live out of the box.
-            selected_window: TimeWindow::Last30Days,
+            selected_window: window,
             preferred_granularity: Granularity::Daily,
             range_menu_open: false,
             loading: false,
@@ -62,6 +64,9 @@ impl Dashboard {
 impl Render for Dashboard {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::current(cx);
+        // Read up front: the elements built below borrow `cx` for the rest of
+        // this frame.
+        let model_rows = Settings::current(cx).model_rows;
 
         // ── Loading skeleton ───────────────────────────────────────
         if self.loading && self.snapshot.is_none() {
@@ -81,7 +86,7 @@ impl Render for Dashboard {
                 .flex_col()
                 .child(EmptyState::new(
                     "No usage data yet",
-                    "Click \"Scan\" to analyze your transcripts",
+                    "Use the refresh button to analyze your transcripts",
                 ))
                 .into_any_element();
         }
@@ -291,7 +296,7 @@ impl Render for Dashboard {
             .gap(px(2.0))
             .child(SectionHeader::new("By Model"));
 
-        for (i, model) in snap.by_model.iter().take(15).enumerate() {
+        for (i, model) in snap.by_model.iter().take(model_rows).enumerate() {
             let color = provider_color(&theme, model.provider);
             model_section = model_section.child(ModelRow::new(
                 format!("model-{}", i),
@@ -331,14 +336,14 @@ mod tests {
 
     #[test]
     fn the_default_view_is_thirty_days_of_daily_bars() {
-        let dashboard = Dashboard::new();
+        let dashboard = Dashboard::new(TimeWindow::Last30Days);
         assert_eq!(dashboard.selected_window, TimeWindow::Last30Days);
         assert_eq!(dashboard.effective_granularity(true), Granularity::Daily);
     }
 
     #[test]
     fn a_single_month_range_falls_back_to_daily_without_losing_the_preference() {
-        let mut dashboard = Dashboard::new();
+        let mut dashboard = Dashboard::new(TimeWindow::Last30Days);
         dashboard.preferred_granularity = Granularity::Monthly;
 
         // "This month" cannot honor Monthly, so the chart draws daily bars…

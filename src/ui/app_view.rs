@@ -1,17 +1,25 @@
-use gpui::{div, prelude::*, px, Context, Entity, SharedString, Window};
+use gpui::{div, prelude::*, px, Context, Entity, FocusHandle, SharedString, Window};
 use crate::theme::Theme;
 use crate::core::scanner;
 use crate::core::pricing::PricingTable;
+use crate::settings::{self, Settings, SettingsChange};
+use super::components::IconButton;
 use super::dashboard::{Dashboard, WindowChanged};
+use super::icons::Icon;
+use super::settings_dialog::SettingsDialog;
 use super::title_bar::Toolbar;
 
 pub struct AppView {
     dashboard: Entity<Dashboard>,
+    settings_open: bool,
+    /// Focused while the settings dialog is open, so Escape closes it.
+    settings_focus: FocusHandle,
 }
 
 impl AppView {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let dashboard = cx.new(|_| Dashboard::new());
+        let settings = Settings::current(cx);
+        let dashboard = cx.new(|_| Dashboard::new(settings.default_range));
 
         // Subscribe to window-change events so we trigger a rescan when the
         // user picks a different time window.
@@ -20,20 +28,26 @@ impl AppView {
             this.start_scan(cx);
         }).detach();
 
-        // Auto-scan on startup so the user sees data immediately.
-        let dash = dashboard.clone();
-        cx.spawn(async move |this, cx| {
-            // Tiny delay so the window renders the skeleton first.
-            cx.background_executor()
-                .timer(std::time::Duration::from_millis(100))
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                this.start_scan(cx);
-            });
-        })
-        .detach();
+        // Auto-scan on startup so the user sees data immediately — unless the
+        // user asked to be left alone until they press refresh.
+        if settings.scan_on_launch {
+            cx.spawn(async move |this, cx| {
+                // Tiny delay so the window renders the skeleton first.
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(100))
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    this.start_scan(cx);
+                });
+            })
+            .detach();
+        }
 
-        Self { dashboard: dash }
+        Self {
+            dashboard: dash,
+            settings_open: false,
+            settings_focus: cx.focus_handle(),
+        }
     }
 
     fn start_scan(&mut self, cx: &mut Context<Self>) {
@@ -43,12 +57,15 @@ impl AppView {
             cx.notify();
         });
         let window = dashboard.read(cx).selected_window;
+        // Which providers are counted is settings, not scanning: resolve it here
+        // and hand the scanner a plain list.
+        let providers = Settings::current(cx).enabled_providers();
         cx.spawn(async move |_this, cx| {
             let snapshot = cx
                 .background_executor()
                 .spawn(async move {
                     let pricing = PricingTable::builtin();
-                    scanner::scan_all(window, &pricing)
+                    scanner::scan_all(window, &pricing, &providers)
                 })
                 .await;
             let _ = dashboard.update(cx, |d, cx| {
@@ -62,6 +79,15 @@ impl AppView {
 
     fn rescan(&mut self, cx: &mut Context<Self>) {
         self.start_scan(cx);
+    }
+
+    /// Apply one edit from the settings dialog, rescanning when the edit
+    /// changes which events are counted.
+    fn apply_setting(&mut self, change: SettingsChange, cx: &mut Context<Self>) {
+        if settings::update(cx, change) {
+            self.start_scan(cx);
+        }
+        cx.notify();
     }
 }
 
@@ -85,6 +111,14 @@ impl Render for AppView {
         let is_loading = self.dashboard.read(cx).loading;
 
         // ── Toolbar ────────────────────────────────────────────────
+        let rescan = cx.listener(|this, _event: &(), _window: &mut Window, cx| this.rescan(cx));
+        let open_settings = cx.listener(|this, _event: &(), window: &mut Window, cx| {
+            this.settings_open = true;
+            // Focus is what makes Escape reach the dialog.
+            window.focus(&this.settings_focus, cx);
+            cx.notify();
+        });
+
         let toolbar = Toolbar::new()
             .left(
                 div()
@@ -100,25 +134,36 @@ impl Render for AppView {
                     .child(range_label),
             )
             .right(
-                div()
-                    .id("scan-button")
-                    .px(px(14.0))
-                    .py(px(6.0))
-                    .rounded(px(6.0))
-                    .bg(theme.inverse)
-                    .text_size(px(12.0))
-                    .text_color(theme.on_inverse)
-                    .cursor_pointer()
-                    .hover(move |style| style.opacity(0.85))
-                    .on_click(cx.listener(|this, _event, _window, cx| {
-                        this.rescan(cx);
-                    }))
-                    .child(if is_loading {
+                IconButton::new("scan-button", Icon::Refresh)
+                    .tooltip(if is_loading {
                         "Scanning…"
                     } else {
-                        "Scan Transcripts"
-                    }),
+                        "Scan transcripts"
+                    })
+                    .busy(is_loading)
+                    .on_click(move |window, cx| rescan(&(), window, cx)),
+            )
+            .right(
+                IconButton::new("settings-button", Icon::Settings)
+                    .tooltip("Settings")
+                    .selected(self.settings_open)
+                    .on_click(move |window, cx| open_settings(&(), window, cx)),
             );
+
+        // ── Settings dialog ────────────────────────────────────────
+        let settings_dialog = self.settings_open.then(|| {
+            let change = cx.listener(|this, change: &SettingsChange, _window, cx| {
+                this.apply_setting(*change, cx);
+            });
+            let close = cx.listener(|this, _event: &(), _window, cx| {
+                this.settings_open = false;
+                cx.notify();
+            });
+
+            SettingsDialog::new(Settings::current(cx), self.settings_focus.clone())
+                .on_change(move |c, window, cx| change(&c, window, cx))
+                .on_close(move |window, cx| close(&(), window, cx))
+        });
 
         // ── Layout ─────────────────────────────────────────────────
         div()
@@ -151,5 +196,6 @@ impl Render for AppView {
                             .child("Reads Claude · Codex · Kimi · OpenCode · Antigravity"),
                     ),
             )
+            .children(settings_dialog)
     }
 }

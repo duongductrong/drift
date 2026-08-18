@@ -1,4 +1,5 @@
 mod core;
+mod settings;
 mod theme;
 mod ui;
 
@@ -9,7 +10,8 @@ use gpui::{
 
 fn main() {
     gpui_platform::application().run(|cx: &mut App| {
-        theme::init(cx);
+        // Publishes both the settings and the theme they select.
+        settings::init(cx);
 
         let bounds = Bounds::centered(None, size(px(900.0), px(640.0)), cx);
         cx.open_window(

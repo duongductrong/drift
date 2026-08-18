@@ -1,5 +1,203 @@
+use std::sync::Arc;
+
 use gpui::{div, prelude::*, px, App, Hsla, SharedString, Window};
 use crate::theme::Theme;
+use super::icons::{Icon, ICON_SIZE};
+use super::tooltip::Tooltip;
+
+type ClickHandler = Arc<dyn Fn(&mut Window, &mut App) + Send + Sync>;
+
+// ---------------------------------------------------------------------------
+// Button — the app's full-size action button.
+//
+// `Primary` is the filled, inverse-on-canvas style; `Subtle` is the same
+// geometry with no fill, for the secondary action sitting beside one.
+//
+// Usage:
+//   Button::new("done", "Done").on_click(|_window, _cx| { … })
+//   Button::new("reset", "Restore defaults").subtle().on_click(…)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ButtonStyle {
+    Primary,
+    Subtle,
+}
+
+#[derive(IntoElement)]
+pub struct Button {
+    id: SharedString,
+    label: SharedString,
+    style: ButtonStyle,
+    on_click: Option<ClickHandler>,
+}
+
+impl Button {
+    pub fn new(id: impl Into<SharedString>, label: impl Into<SharedString>) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            style: ButtonStyle::Primary,
+            on_click: None,
+        }
+    }
+
+    pub fn subtle(mut self) -> Self {
+        self.style = ButtonStyle::Subtle;
+        self
+    }
+
+    pub fn on_click(
+        mut self,
+        handler: impl Fn(&mut Window, &mut App) + Send + Sync + 'static,
+    ) -> Self {
+        self.on_click = Some(Arc::new(handler));
+        self
+    }
+}
+
+impl RenderOnce for Button {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = Theme::current(cx);
+        let on_click = self.on_click.clone();
+
+        div()
+            .id(self.id)
+            .flex_none()
+            .px(px(14.0))
+            .py(px(6.0))
+            .rounded(px(6.0))
+            .text_size(px(12.0))
+            .cursor_pointer()
+            .map(|el| match self.style {
+                ButtonStyle::Primary => el
+                    .bg(theme.inverse)
+                    .text_color(theme.on_inverse)
+                    .hover(|style| style.opacity(0.85)),
+                ButtonStyle::Subtle => el
+                    .text_color(theme.text_secondary)
+                    .hover(|style| style.bg(theme.overlay).text_color(theme.text)),
+            })
+            .child(self.label)
+            .on_click(move |_event, window, cx| {
+                if let Some(handler) = &on_click {
+                    handler(window, cx);
+                }
+            })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// IconButton — a square, icon-only control for the toolbar.
+//
+// Sized to the same 26pt height as the dashboard's filter pill so the chrome
+// lines up, and labelled by a tooltip since the glyph carries no text. `busy`
+// stands in for an action already running: the icon dims and clicks stop, so a
+// scan cannot be started twice.
+//
+// Usage:
+//   IconButton::new("scan", Icon::Refresh)
+//       .tooltip("Scan transcripts")
+//       .on_click(|_window, _cx| { … })
+// ---------------------------------------------------------------------------
+
+/// Side length of an icon button — matches the filter pill's height.
+pub const ICON_BUTTON_SIZE: f32 = 26.0;
+
+#[derive(IntoElement)]
+pub struct IconButton {
+    id: SharedString,
+    icon: Icon,
+    tooltip: Option<SharedString>,
+    selected: bool,
+    busy: bool,
+    on_click: Option<ClickHandler>,
+}
+
+impl IconButton {
+    pub fn new(id: impl Into<SharedString>, icon: Icon) -> Self {
+        Self {
+            id: id.into(),
+            icon,
+            tooltip: None,
+            selected: false,
+            busy: false,
+            on_click: None,
+        }
+    }
+
+    pub fn tooltip(mut self, label: impl Into<SharedString>) -> Self {
+        self.tooltip = Some(label.into());
+        self
+    }
+
+    /// Held-open state, for a button whose panel is currently showing.
+    pub fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    /// The action is already running: dimmed and inert.
+    pub fn busy(mut self, busy: bool) -> Self {
+        self.busy = busy;
+        self
+    }
+
+    pub fn on_click(
+        mut self,
+        handler: impl Fn(&mut Window, &mut App) + Send + Sync + 'static,
+    ) -> Self {
+        self.on_click = Some(Arc::new(handler));
+        self
+    }
+}
+
+impl RenderOnce for IconButton {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = Theme::current(cx);
+        let on_click = self.on_click.clone();
+
+        // The icon is painted as a mask, so its tint cannot be inherited from a
+        // hover style on the button. A group hover keyed to this button's id
+        // lets the icon brighten with the button it sits in.
+        let group = SharedString::from(format!("{}-icon", self.id));
+        let resting = if self.busy {
+            theme.text_ghost
+        } else if self.selected {
+            theme.text
+        } else {
+            theme.text_secondary
+        };
+
+        div()
+            .id(self.id)
+            .group(group.clone())
+            .flex_none()
+            .size(px(ICON_BUTTON_SIZE))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(7.0))
+            .cursor_default()
+            .when(self.selected, |el| el.bg(theme.overlay_strong))
+            .when(!self.busy, |el| el.hover(|style| style.bg(theme.overlay)))
+            .child(
+                self.icon
+                    .element(px(ICON_SIZE), resting)
+                    .when(!self.busy, |icon| {
+                        icon.group_hover(group, |style| style.text_color(theme.text))
+                    }),
+            )
+            .when_some(self.tooltip, |el, label| el.tooltip(Tooltip::text(label)))
+            .when(!self.busy, |el| {
+                el.on_click(move |_event, window, cx| {
+                    if let Some(handler) = &on_click {
+                        handler(window, cx);
+                    }
+                })
+            })
+    }
+}
 
 // ---------------------------------------------------------------------------
 // StatCard — a headline metric card with label and large value. Mirrors

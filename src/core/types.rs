@@ -104,7 +104,10 @@ impl Default for DailyAggregate {
             date: chrono::NaiveDate::default(),
             total_tokens: 0,
             cost_usd: 0.0,
-            by_provider: Provider::ALL.iter().map(|_| ProviderMetrics::default()).collect(),
+            by_provider: Provider::ALL
+                .iter()
+                .map(|_| ProviderMetrics::default())
+                .collect(),
         }
     }
 }
@@ -147,9 +150,9 @@ impl TimeWindow {
 
     pub fn label(&self) -> &'static str {
         match self {
-            TimeWindow::Last7Days => "7 days",
-            TimeWindow::Last30Days => "30 days",
-            TimeWindow::Last90Days => "90 days",
+            TimeWindow::Last7Days => "Last 7 days",
+            TimeWindow::Last30Days => "Last 30 days",
+            TimeWindow::Last90Days => "Last 90 days",
             TimeWindow::CurrentMonth => "This month",
             TimeWindow::PreviousMonth => "Last month",
         }
@@ -159,12 +162,14 @@ impl TimeWindow {
         use chrono::Days;
         match self {
             TimeWindow::Last7Days => (today.checked_sub_days(Days::new(6)).unwrap_or(today), today),
-            TimeWindow::Last30Days => {
-                (today.checked_sub_days(Days::new(29)).unwrap_or(today), today)
-            }
-            TimeWindow::Last90Days => {
-                (today.checked_sub_days(Days::new(89)).unwrap_or(today), today)
-            }
+            TimeWindow::Last30Days => (
+                today.checked_sub_days(Days::new(29)).unwrap_or(today),
+                today,
+            ),
+            TimeWindow::Last90Days => (
+                today.checked_sub_days(Days::new(89)).unwrap_or(today),
+                today,
+            ),
             TimeWindow::CurrentMonth => {
                 let start =
                     NaiveDate::from_ymd_opt(today.year(), today.month(), 1).unwrap_or(today);
@@ -234,9 +239,8 @@ impl Granularity {
             Granularity::Monthly => {
                 let mut months: Vec<PeriodBucket> = Vec::new();
                 for day in daily {
-                    let month_start =
-                        NaiveDate::from_ymd_opt(day.date.year(), day.date.month(), 1)
-                            .unwrap_or(day.date);
+                    let month_start = NaiveDate::from_ymd_opt(day.date.year(), day.date.month(), 1)
+                        .unwrap_or(day.date);
 
                     // `daily` arrives in ascending date order, so the bucket a
                     // day belongs to is always the one we most recently opened.
@@ -358,8 +362,14 @@ mod tests {
         assert_eq!(buckets[1].cost_usd, 4.25);
 
         // Totals survive the rollup intact, per provider as well as overall.
-        assert_eq!(buckets[0].by_provider[Provider::Claude.index()].cost_usd, 3.0);
-        assert_eq!(buckets[0].by_provider[Provider::Codex.index()].cost_usd, 0.5);
+        assert_eq!(
+            buckets[0].by_provider[Provider::Claude.index()].cost_usd,
+            3.0
+        );
+        assert_eq!(
+            buckets[0].by_provider[Provider::Codex.index()].cost_usd,
+            0.5
+        );
         assert_eq!(buckets[0].total_tokens, 3500);
 
         let daily_total: f64 = daily.iter().map(|d| d.cost_usd).sum();
@@ -393,9 +403,8 @@ mod tests {
 
     #[test]
     fn monthly_is_offered_only_for_ranges_crossing_a_month() {
-        let within = |a: &str, b: &str| {
-            spans_multiple_months(a.parse().unwrap(), b.parse().unwrap())
-        };
+        let within =
+            |a: &str, b: &str| spans_multiple_months(a.parse().unwrap(), b.parse().unwrap());
 
         // A full calendar month is still one bar — not worth the switch.
         assert!(!within("2026-08-01", "2026-08-31"));

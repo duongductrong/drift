@@ -15,15 +15,40 @@ use crate::core::pricing::{compute_cost, compute_cache_savings, PricingTable};
 // Transcript discovery
 // ---------------------------------------------------------------------------
 
-pub fn transcript_root(provider: Provider) -> Option<PathBuf> {
+/// Where a provider keeps its usage records on this machine.
+///
+/// The single place these paths are written down: the scanners below read them
+/// from here, and the settings dialog shows them so the user can see what each
+/// provider row actually reads.
+pub fn data_source(provider: Provider) -> Option<PathBuf> {
     let home = dirs::home_dir()?;
-    match provider {
-        Provider::Claude => Some(home.join(".claude").join("projects")),
-        Provider::Codex => Some(home.join(".codex").join("sessions")),
-        Provider::Kimi => Some(home.join(".kimi-code").join("sessions")),
-        // OpenCode and Antigravity use SQLite databases, not transcript files.
-        Provider::OpenCode | Provider::Antigravity => None,
-    }
+    Some(match provider {
+        Provider::Claude => home.join(".claude").join("projects"),
+        Provider::Codex => home.join(".codex").join("sessions"),
+        Provider::Kimi => home.join(".kimi-code").join("sessions"),
+        Provider::OpenCode => home
+            .join(".local")
+            .join("share")
+            .join("opencode")
+            .join("opencode.db"),
+        Provider::Antigravity => home.join(".gemini").join("antigravity").join("conversations"),
+    })
+}
+
+/// Whether a provider is read by parsing `.jsonl` transcripts, as opposed to
+/// one of the SQLite stores.
+fn is_transcript_provider(provider: Provider) -> bool {
+    matches!(
+        provider,
+        Provider::Claude | Provider::Codex | Provider::Kimi
+    )
+}
+
+pub fn transcript_root(provider: Provider) -> Option<PathBuf> {
+    // OpenCode and Antigravity use SQLite databases, not transcript files.
+    is_transcript_provider(provider)
+        .then(|| data_source(provider))
+        .flatten()
 }
 
 /// Lists `.jsonl` transcripts under `root` modified at or after `since_ms`.
@@ -453,14 +478,9 @@ fn read_transcript_records(path: &Path, provider: Provider) -> Option<Vec<UsageE
 
 /// Scans the OpenCode SQLite database for usage events.
 fn scan_opencode(since_ms: i64) -> Vec<UsageEvent> {
-    let Some(home) = dirs::home_dir() else {
+    let Some(db_path) = data_source(Provider::OpenCode) else {
         return Vec::new();
     };
-    let db_path = home
-        .join(".local")
-        .join("share")
-        .join("opencode")
-        .join("opencode.db");
     if !db_path.exists() {
         return Vec::new();
     }
@@ -655,13 +675,9 @@ impl PbValue {
 
 /// Scans all Antigravity conversation databases for usage events.
 fn scan_antigravity(since_ms: i64) -> Vec<UsageEvent> {
-    let Some(home) = dirs::home_dir() else {
+    let Some(convos_dir) = data_source(Provider::Antigravity) else {
         return Vec::new();
     };
-    let convos_dir = home
-        .join(".gemini")
-        .join("antigravity")
-        .join("conversations");
     if !convos_dir.exists() {
         return Vec::new();
     }
@@ -895,7 +911,16 @@ fn read_antigravity_db(path: &Path, session_key: &str) -> Option<Vec<UsageEvent>
 // Scan + Aggregate
 // ---------------------------------------------------------------------------
 
-pub fn scan_all(window: TimeWindow, pricing: &PricingTable) -> UsageSnapshot {
+/// Builds a snapshot for `window`, reading only `providers`.
+///
+/// The provider set is an argument rather than a lookup: the scanner stays
+/// unaware of where the choice came from, so the settings layer can narrow a
+/// scan without the aggregation logic knowing settings exist.
+pub fn scan_all(
+    window: TimeWindow,
+    pricing: &PricingTable,
+    providers: &[Provider],
+) -> UsageSnapshot {
     let start_time = std::time::Instant::now();
     let today = Local::now().date_naive();
     let (start_date, end_date) = window.date_range(today);
@@ -915,7 +940,7 @@ pub fn scan_all(window: TimeWindow, pricing: &PricingTable) -> UsageSnapshot {
     // ── Scan transcript-based providers (Claude, Codex, Kimi) ──────
     let mut all_events = Vec::new();
 
-    for provider in [Provider::Claude, Provider::Codex, Provider::Kimi] {
+    for provider in providers.iter().copied().filter(|p| is_transcript_provider(*p)) {
         if let Some(root) = transcript_root(provider) {
             let files = discover_transcripts(&root, start_ts_ms);
             for file in files {
@@ -927,8 +952,12 @@ pub fn scan_all(window: TimeWindow, pricing: &PricingTable) -> UsageSnapshot {
     }
 
     // ── Scan SQLite-based providers ────────────────────────────────
-    all_events.extend(scan_opencode(start_ts_ms));
-    all_events.extend(scan_antigravity(start_ts_ms));
+    if providers.contains(&Provider::OpenCode) {
+        all_events.extend(scan_opencode(start_ts_ms));
+    }
+    if providers.contains(&Provider::Antigravity) {
+        all_events.extend(scan_antigravity(start_ts_ms));
+    }
 
     // ── Cross-file dedup + time filter ─────────────────────────────
     let mut unique_events = Vec::new();
