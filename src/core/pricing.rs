@@ -286,6 +286,89 @@ impl PricingTable {
             },
         );
 
+        // --- Kimi / Moonshot models ---
+
+        let kimi_coding_rate = ModelPricing {
+            input_rate: 0.40 / 1_000_000.0,
+            output_rate: 1.60 / 1_000_000.0,
+            cache_read_rate: 0.05 / 1_000_000.0,
+            cache_write_rate: 0.40 / 1_000_000.0,
+        };
+        for name in [
+            "kimi-for-coding", "kimi-for-coding-highspeed",
+        ] {
+            rates.insert(name.to_string(), kimi_coding_rate);
+        }
+
+        let k3_rate = ModelPricing {
+            input_rate: 1.00 / 1_000_000.0,
+            output_rate: 4.00 / 1_000_000.0,
+            cache_read_rate: 0.15 / 1_000_000.0,
+            cache_write_rate: 1.00 / 1_000_000.0,
+        };
+        for name in ["k3", "k3-256k"] {
+            rates.insert(name.to_string(), k3_rate);
+        }
+
+        // --- OpenCode hosted models ---
+
+        let glm_rate = ModelPricing {
+            input_rate: 0.10 / 1_000_000.0,
+            output_rate: 0.40 / 1_000_000.0,
+            cache_read_rate: 0.02 / 1_000_000.0,
+            cache_write_rate: 0.10 / 1_000_000.0,
+        };
+        for name in ["glm-4.7-free", "glm-4.7"] {
+            rates.insert(name.to_string(), glm_rate);
+        }
+
+        let minimax_rate = ModelPricing {
+            input_rate: 0.20 / 1_000_000.0,
+            output_rate: 0.80 / 1_000_000.0,
+            cache_read_rate: 0.04 / 1_000_000.0,
+            cache_write_rate: 0.20 / 1_000_000.0,
+        };
+        for name in [
+            "minimax-m2.1-free", "minimax-m2.7", "minimax-m3",
+        ] {
+            rates.insert(name.to_string(), minimax_rate);
+        }
+
+        // --- Google Gemini models (Antigravity) ---
+
+        let gemini_flash_rate = ModelPricing {
+            input_rate: 0.075 / 1_000_000.0,
+            output_rate: 0.30 / 1_000_000.0,
+            cache_read_rate: 0.01875 / 1_000_000.0,
+            cache_write_rate: 0.075 / 1_000_000.0,
+        };
+        for name in [
+            "gemini-2.5-flash", "gemini-3.0-flash", "gemini-3-flash",
+            "gemini-3.7-flash", "gemini-auto",
+        ] {
+            rates.insert(name.to_string(), gemini_flash_rate);
+        }
+
+        let gemini_pro_rate = ModelPricing {
+            input_rate: 1.25 / 1_000_000.0,
+            output_rate: 5.00 / 1_000_000.0,
+            cache_read_rate: 0.3125 / 1_000_000.0,
+            cache_write_rate: 1.25 / 1_000_000.0,
+        };
+        for name in ["gemini-2.5-pro", "gemini-3.0-pro", "gemini-3-pro"] {
+            rates.insert(name.to_string(), gemini_pro_rate);
+        }
+
+        rates.insert(
+            "gemini-flash-lite".to_string(),
+            ModelPricing {
+                input_rate: 0.0375 / 1_000_000.0,
+                output_rate: 0.15 / 1_000_000.0,
+                cache_read_rate: 0.009375 / 1_000_000.0,
+                cache_write_rate: 0.0375 / 1_000_000.0,
+            },
+        );
+
         Self { rates }
     }
 

@@ -148,7 +148,7 @@ impl Render for AppView {
                         div()
                             .text_size(px(10.0))
                             .text_color(theme.text_ghost)
-                            .child("Reads ~/.claude/projects & ~/.codex/sessions"),
+                            .child("Reads Claude · Codex · Kimi · OpenCode · Antigravity"),
                     ),
             )
     }

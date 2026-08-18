@@ -1,6 +1,7 @@
 use gpui::*;
 use crate::theme::Theme;
-use crate::core::types::DailyAggregate;
+use crate::core::types::{DailyAggregate, Provider};
+use crate::ui::components::provider_color;
 
 /// Chart height matching Waku's `h-56` plot.
 const CHART_HEIGHT: f32 = 224.0;
@@ -60,6 +61,31 @@ impl RenderOnce for DailyChart {
         let theme = Theme::current(cx);
 
         // ── Header: title + legend ──────────────────────────────────
+        let mut legend = div().flex().items_center().gap(px(14.0));
+        for provider in Provider::ALL {
+            let color = provider_color(&theme, provider);
+            legend = legend.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(5.0))
+                    .child(
+                        div()
+                            .w(px(8.0))
+                            .h(px(8.0))
+                            .flex_none()
+                            .rounded_full()
+                            .bg(color),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(10.5))
+                            .text_color(theme.text_secondary)
+                            .child(provider.label()),
+                    ),
+            );
+        }
+
         let header = div()
             .flex()
             .justify_between()
@@ -71,52 +97,7 @@ impl RenderOnce for DailyChart {
                     .text_color(theme.text)
                     .child("Daily Cost"),
             )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(14.0))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(5.0))
-                            .child(
-                                div()
-                                    .w(px(8.0))
-                                    .h(px(8.0))
-                                    .flex_none()
-                                    .rounded_full()
-                                    .bg(theme.chart_claude),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(10.5))
-                                    .text_color(theme.text_secondary)
-                                    .child("Claude"),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(5.0))
-                            .child(
-                                div()
-                                    .w(px(8.0))
-                                    .h(px(8.0))
-                                    .flex_none()
-                                    .rounded_full()
-                                    .bg(theme.chart_codex),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(10.5))
-                                    .text_color(theme.text_secondary)
-                                    .child("Codex"),
-                            ),
-                    ),
-            );
+            .child(legend);
 
         // ── Compute scale ───────────────────────────────────────────
         let peak = self
@@ -156,8 +137,10 @@ impl RenderOnce for DailyChart {
 
         // ── Plot canvas ─────────────────────────────────────────────
         let daily_data = self.daily.clone();
-        let chart_claude = theme.chart_claude;
-        let chart_codex = theme.chart_codex;
+        let chart_colors: Vec<Hsla> = Provider::ALL
+            .iter()
+            .map(|p| provider_color(&theme, *p))
+            .collect();
         let grid_color = theme.border;
 
         let plot = canvas(
@@ -192,38 +175,34 @@ impl RenderOnce for DailyChart {
                 let mut x = bounds.origin.x;
 
                 for day in &daily_data {
-                    let claude_val = day.by_provider[0].cost_usd;
-                    let codex_val = day.by_provider[1].cost_usd;
-                    let total = claude_val + codex_val;
+                    // Collect per-provider costs and colors for this day
+                    let segments: Vec<(f64, Hsla)> = day
+                        .by_provider
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, pm)| {
+                            if pm.cost_usd > 0.0 && i < chart_colors.len() {
+                                Some((pm.cost_usd, chart_colors[i]))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+
+                    let total: f64 = segments.iter().map(|(c, _)| c).sum();
 
                     if total > 0.0 {
                         let total_h = bounds.size.height * (total / max_val) as f32;
-                        let claude_h = total_h * (claude_val / total) as f32;
-                        let codex_h = total_h - claude_h;
+                        let mut y_offset = bounds.bottom();
 
-                        // Claude bar (bottom)
-                        if claude_val > 0.0 {
+                        // Draw stacked bars bottom-to-top
+                        for (cost, color) in &segments {
+                            let seg_h = total_h * (*cost / total) as f32;
+                            y_offset = y_offset - seg_h;
                             window.paint_quad(quad(
-                                Bounds::new(
-                                    point(x, bounds.bottom() - claude_h),
-                                    size(bar_w, claude_h),
-                                ),
+                                Bounds::new(point(x, y_offset), size(bar_w, seg_h)),
                                 px(1.0),
-                                chart_claude,
-                                px(0.0),
-                                transparent_black(),
-                                BorderStyle::default(),
-                            ));
-                        }
-                        // Codex bar (stacked above Claude)
-                        if codex_val > 0.0 {
-                            window.paint_quad(quad(
-                                Bounds::new(
-                                    point(x, bounds.bottom() - claude_h - codex_h),
-                                    size(bar_w, codex_h),
-                                ),
-                                px(1.0),
-                                chart_codex,
+                                *color,
                                 px(0.0),
                                 transparent_black(),
                                 BorderStyle::default(),

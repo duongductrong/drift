@@ -5,15 +5,27 @@ use chrono::{Datelike, NaiveDate};
 pub enum Provider {
     Claude,
     Codex,
+    Kimi,
+    OpenCode,
+    Antigravity,
 }
 
 impl Provider {
-    pub const ALL: [Provider; 2] = [Provider::Claude, Provider::Codex];
+    pub const ALL: [Provider; 5] = [
+        Provider::Claude,
+        Provider::Codex,
+        Provider::Kimi,
+        Provider::OpenCode,
+        Provider::Antigravity,
+    ];
 
     pub fn label(&self) -> &'static str {
         match self {
             Provider::Claude => "Claude",
             Provider::Codex => "Codex",
+            Provider::Kimi => "Kimi",
+            Provider::OpenCode => "OpenCode",
+            Provider::Antigravity => "Antigravity",
         }
     }
 
@@ -21,6 +33,9 @@ impl Provider {
         match self {
             Provider::Claude => 0,
             Provider::Codex => 1,
+            Provider::Kimi => 2,
+            Provider::OpenCode => 3,
+            Provider::Antigravity => 4,
         }
     }
 }
@@ -76,12 +91,23 @@ pub struct ModelPricing {
 }
 
 /// Aggregated cost and token totals for a single day
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct DailyAggregate {
     pub date: chrono::NaiveDate,
     pub total_tokens: u64,
     pub cost_usd: f64,
-    pub by_provider: [ProviderMetrics; 2],
+    pub by_provider: Vec<ProviderMetrics>,
+}
+
+impl Default for DailyAggregate {
+    fn default() -> Self {
+        Self {
+            date: chrono::NaiveDate::default(),
+            total_tokens: 0,
+            cost_usd: 0.0,
+            by_provider: Provider::ALL.iter().map(|_| ProviderMetrics::default()).collect(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]

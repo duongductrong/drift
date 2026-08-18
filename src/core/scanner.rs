@@ -6,7 +6,7 @@ use chrono::{DateTime, Local, NaiveDate, TimeZone, Utc};
 use serde_json::Value;
 
 use crate::core::types::{
-    DailyAggregate, ModelAggregate, Provider, ProviderMetrics, ProviderSummary,
+    DailyAggregate, ModelAggregate, Provider, ProviderSummary,
     TimeWindow, TokenBreakdown, UsageEvent, UsageSnapshot,
 };
 use crate::core::pricing::{compute_cost, compute_cache_savings, PricingTable};
@@ -20,6 +20,9 @@ pub fn transcript_root(provider: Provider) -> Option<PathBuf> {
     match provider {
         Provider::Claude => Some(home.join(".claude").join("projects")),
         Provider::Codex => Some(home.join(".codex").join("sessions")),
+        Provider::Kimi => Some(home.join(".kimi-code").join("sessions")),
+        // OpenCode and Antigravity use SQLite databases, not transcript files.
+        Provider::OpenCode | Provider::Antigravity => None,
     }
 }
 
@@ -97,6 +100,8 @@ fn might_carry_usage(line: &str, provider: Provider) -> bool {
     match provider {
         Provider::Claude => line.contains("\"usage\""),
         Provider::Codex => line.contains("\"token_count\""),
+        Provider::Kimi => line.contains("\"step.end\""),
+        _ => false,
     }
 }
 
@@ -282,6 +287,92 @@ pub fn parse_codex_line(line: &str, state: &mut CodexParseState) -> Option<Usage
 }
 
 // ---------------------------------------------------------------------------
+// Kimi parser (stateful per-file, reads wire.jsonl)
+// ---------------------------------------------------------------------------
+
+/// Rolling state for a single Kimi Code wire.jsonl file. Model is carried
+/// forward from `profile.bind` and `config.update` events.
+#[derive(Default)]
+pub struct KimiParseState {
+    pub current_model: String,
+    pub session_key: String,
+    pub working_dir: String,
+}
+
+/// Feeds one line of a Kimi wire.jsonl into `state`, returning a record when
+/// the line was a usage event (step.end).
+pub fn parse_kimi_line(line: &str, state: &mut KimiParseState) -> Option<UsageEvent> {
+    let v: Value = serde_json::from_str(line).ok()?;
+
+    match v.get("type").and_then(Value::as_str) {
+        Some("profile.bind") => {
+            if let Some(m) = v.get("modelAlias").and_then(Value::as_str) {
+                state.current_model = m.to_owned();
+            }
+            return None;
+        }
+        Some("config.update") => {
+            if let Some(m) = v.get("modelAlias").and_then(Value::as_str) {
+                state.current_model = m.to_owned();
+            }
+            return None;
+        }
+        _ => {}
+    }
+
+    // Only context.append_loop_event with step.end carry usage.
+    if v.get("type").and_then(Value::as_str) != Some("context.append_loop_event") {
+        return None;
+    }
+
+    let event = v.get("event")?.as_object()?;
+    if event.get("type").and_then(Value::as_str) != Some("step.end") {
+        return None;
+    }
+
+    let usage = event.get("usage")?.as_object()?;
+    let timestamp_ms = v.get("time").and_then(Value::as_i64)?;
+
+    if state.current_model.is_empty() {
+        return None;
+    }
+
+    let fresh_input = int(usage.get("inputOther"));
+    let cached_input = int(usage.get("inputCacheRead"));
+    let cache_write = int(usage.get("inputCacheCreation"));
+    let output = int(usage.get("output"));
+
+    let tokens = TokenBreakdown {
+        fresh_input,
+        cached_input,
+        cache_write,
+        output,
+        reasoning: 0,
+    };
+
+    if tokens.total() == 0 {
+        return None;
+    }
+
+    let dedup_id = event
+        .get("uuid")
+        .or_else(|| event.get("messageId"))
+        .and_then(Value::as_str)
+        .map(|s| s.to_owned());
+
+    Some(UsageEvent {
+        provider: Provider::Kimi,
+        timestamp_ms,
+        model_name: state.current_model.clone(),
+        session_key: state.session_key.clone(),
+        working_dir: state.working_dir.clone(),
+        tokens,
+        reported_cost: None,
+        dedup_id,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // File reader with in-file dedup and substring pre-filter
 // ---------------------------------------------------------------------------
 
@@ -294,7 +385,31 @@ fn read_transcript_records(path: &Path, provider: Provider) -> Option<Vec<UsageE
     let mut line = String::new();
     let mut records = Vec::new();
     let mut codex_state = CodexParseState::default();
+    let mut kimi_state = KimiParseState::default();
     let mut seen_in_file: HashSet<String> = HashSet::new();
+
+    // For Kimi, extract session key and working dir from the path and
+    // state.json in the session directory.
+    if provider == Provider::Kimi {
+        // path is .../session_<uuid>/agents/main/wire.jsonl
+        if let Some(session_dir) = path.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) {
+            let session_name = session_dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown");
+            kimi_state.session_key = session_name.to_owned();
+
+            // Try reading state.json for working directory
+            let state_path = session_dir.join("state.json");
+            if let Ok(content) = fs::read_to_string(&state_path) {
+                if let Ok(state) = serde_json::from_str::<Value>(&content) {
+                    if let Some(cwd) = state.get("cwd").and_then(Value::as_str) {
+                        kimi_state.working_dir = cwd.to_owned();
+                    }
+                }
+            }
+        }
+    }
 
     loop {
         line.clear();
@@ -333,9 +448,458 @@ fn read_transcript_records(path: &Path, provider: Provider) -> Option<Vec<UsageE
                     records.push(record);
                 }
             }
+            Provider::Kimi => {
+                // Kimi carries model on profile.bind and config.update lines
+                // that hold no usage, so those still pass through.
+                if !might_carry_usage(&line, provider)
+                    && !line.contains("\"profile.bind\"")
+                    && !line.contains("\"config.update\"")
+                {
+                    continue;
+                }
+                if let Some(record) = parse_kimi_line(&line, &mut kimi_state) {
+                    if let Some(key) = &record.dedup_id {
+                        if !seen_in_file.insert(key.clone()) {
+                            continue;
+                        }
+                    }
+                    records.push(record);
+                }
+            }
+            // OpenCode and Antigravity don't use transcript files.
+            _ => return None,
         }
     }
     Some(records)
+}
+
+// ---------------------------------------------------------------------------
+// OpenCode SQLite scanner
+// ---------------------------------------------------------------------------
+
+/// Scans the OpenCode SQLite database for usage events.
+fn scan_opencode(since_ms: i64) -> Vec<UsageEvent> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    let db_path = home
+        .join(".local")
+        .join("share")
+        .join("opencode")
+        .join("opencode.db");
+    if !db_path.exists() {
+        return Vec::new();
+    }
+
+    let Ok(conn) = rusqlite::Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) else {
+        return Vec::new();
+    };
+
+    let mut events = Vec::new();
+    let query = "SELECT id, session_id, time_created, data FROM message \
+                 WHERE json_extract(data, '$.role') = 'assistant' \
+                 AND time_created >= ?1";
+
+    let Ok(mut stmt) = conn.prepare(query) else {
+        return events;
+    };
+
+    let rows = stmt.query_map([since_ms], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, String>(3)?,
+        ))
+    });
+
+    let Ok(rows) = rows else {
+        return events;
+    };
+
+    for row in rows.flatten() {
+        let (msg_id, session_id, time_created, raw_data) = row;
+        let Ok(data) = serde_json::from_str::<Value>(&raw_data) else {
+            continue;
+        };
+
+        let Some(tokens_obj) = data.get("tokens") else {
+            continue;
+        };
+
+        let fresh_input = int(tokens_obj.get("input"));
+        let output = int(tokens_obj.get("output"));
+        let reasoning = int(tokens_obj.get("reasoning"));
+        let (cached_input, cache_write) = if let Some(cache) = tokens_obj.get("cache") {
+            (int(cache.get("read")), int(cache.get("write")))
+        } else {
+            (0, 0)
+        };
+
+        let tokens = TokenBreakdown {
+            fresh_input,
+            cached_input,
+            cache_write,
+            output,
+            reasoning,
+        };
+
+        if tokens.total() == 0 {
+            continue;
+        }
+
+        let provider_id = data
+            .get("providerID")
+            .and_then(Value::as_str)
+            .unwrap_or("opencode");
+        let model_id = data
+            .get("modelID")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let model_name = if provider_id == "opencode" {
+            model_id.to_owned()
+        } else {
+            format!("{}/{}", provider_id, model_id)
+        };
+
+        let reported_cost = data
+            .get("cost")
+            .and_then(Value::as_f64)
+            .filter(|c| c.is_finite() && *c > 0.0);
+
+        let working_dir = data
+            .get("path")
+            .and_then(|p| p.get("cwd"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+
+        events.push(UsageEvent {
+            provider: Provider::OpenCode,
+            timestamp_ms: time_created,
+            model_name,
+            session_key: session_id,
+            working_dir,
+            tokens,
+            reported_cost,
+            dedup_id: Some(msg_id),
+        });
+    }
+
+    events
+}
+
+// ---------------------------------------------------------------------------
+// Antigravity (Google AGY) SQLite + Protobuf scanner
+// ---------------------------------------------------------------------------
+
+/// Decode a protobuf varint from a byte slice, returning (value, bytes_consumed).
+fn decode_varint(data: &[u8]) -> Option<(u64, usize)> {
+    let mut val: u64 = 0;
+    let mut shift = 0;
+    for (i, &byte) in data.iter().enumerate() {
+        val |= ((byte & 0x7f) as u64) << shift;
+        shift += 7;
+        if byte & 0x80 == 0 {
+            return Some((val, i + 1));
+        }
+        if shift >= 64 {
+            return None;
+        }
+    }
+    None
+}
+
+/// Minimal protobuf wire-format field extractor. Returns varints and
+/// length-delimited fields indexed by field number.
+fn decode_pb_fields(data: &[u8]) -> HashMap<u32, Vec<PbValue>> {
+    let mut fields: HashMap<u32, Vec<PbValue>> = HashMap::new();
+    let mut idx = 0;
+    while idx < data.len() {
+        let Some((tag, consumed)) = decode_varint(&data[idx..]) else {
+            break;
+        };
+        idx += consumed;
+        let wire_type = (tag & 0x07) as u8;
+        let field_num = (tag >> 3) as u32;
+
+        match wire_type {
+            0 => {
+                // Varint
+                let Some((val, consumed)) = decode_varint(&data[idx..]) else {
+                    break;
+                };
+                idx += consumed;
+                fields
+                    .entry(field_num)
+                    .or_default()
+                    .push(PbValue::Varint(val));
+            }
+            2 => {
+                // Length-delimited
+                let Some((len, consumed)) = decode_varint(&data[idx..]) else {
+                    break;
+                };
+                idx += consumed;
+                let end = idx + len as usize;
+                if end > data.len() {
+                    break;
+                }
+                fields
+                    .entry(field_num)
+                    .or_default()
+                    .push(PbValue::Bytes(data[idx..end].to_vec()));
+                idx = end;
+            }
+            1 => {
+                idx += 8;
+            } // 64-bit
+            5 => {
+                idx += 4;
+            } // 32-bit
+            _ => break,
+        }
+    }
+    fields
+}
+
+#[derive(Debug)]
+enum PbValue {
+    Varint(u64),
+    Bytes(Vec<u8>),
+}
+
+impl PbValue {
+    fn as_varint(&self) -> Option<u64> {
+        match self {
+            PbValue::Varint(v) => Some(*v),
+            _ => None,
+        }
+    }
+    fn as_bytes(&self) -> Option<&[u8]> {
+        match self {
+            PbValue::Bytes(b) => Some(b),
+            _ => None,
+        }
+    }
+}
+
+/// Scans all Antigravity conversation databases for usage events.
+fn scan_antigravity(since_ms: i64) -> Vec<UsageEvent> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    let convos_dir = home
+        .join(".gemini")
+        .join("antigravity")
+        .join("conversations");
+    if !convos_dir.exists() {
+        return Vec::new();
+    }
+
+    let cutoff = since_ms - MTIME_SLACK_MS;
+    let mut all_events = Vec::new();
+
+    let Ok(entries) = fs::read_dir(&convos_dir) else {
+        return Vec::new();
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.extension().is_some_and(|e| e == "db") {
+            continue;
+        }
+
+        // Filter by mtime
+        if let Ok(metadata) = entry.metadata() {
+            if let Ok(mtime) = metadata.modified() {
+                let mtime_ms = mtime
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as i64;
+                if mtime_ms < cutoff {
+                    continue;
+                }
+            }
+        }
+
+        // Extract conversation UUID from filename for session key
+        let session_key = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_owned();
+
+        if let Some(events) = read_antigravity_db(&path, &session_key) {
+            all_events.extend(events);
+        }
+    }
+
+    all_events
+}
+
+/// Read usage events from a single Antigravity conversation database.
+fn read_antigravity_db(path: &Path, session_key: &str) -> Option<Vec<UsageEvent>> {
+    let conn = rusqlite::Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .ok()?;
+
+    // Try to extract working directory from trajectory_metadata_blob
+    let working_dir = conn
+        .query_row(
+            "SELECT data FROM trajectory_metadata_blob LIMIT 1",
+            [],
+            |row| row.get::<_, Vec<u8>>(0),
+        )
+        .ok()
+        .and_then(|blob| {
+            let fields = decode_pb_fields(&blob);
+            // Field 1 often contains a workspace URI string like "file:///path/to/project"
+            fields.get(&1).and_then(|vals| {
+                vals.iter().find_map(|v| {
+                    let bytes = v.as_bytes()?;
+                    let s = std::str::from_utf8(bytes).ok()?;
+                    if s.starts_with("file:///") {
+                        Some(s.strip_prefix("file://").unwrap_or(s).to_owned())
+                    } else {
+                        None
+                    }
+                })
+            })
+        })
+        .unwrap_or_default();
+
+    let mut events = Vec::new();
+
+    let mut stmt = conn
+        .prepare("SELECT idx, data, size FROM gen_metadata")
+        .ok()?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })
+        .ok()?;
+
+    for row in rows.flatten() {
+        let (_idx, data, _size) = row;
+        let fields = decode_pb_fields(&data);
+
+        // Field 1 contains the execution telemetry sub-message
+        let Some(f1_vals) = fields.get(&1) else {
+            continue;
+        };
+        let Some(f1_bytes) = f1_vals.first().and_then(|v| v.as_bytes()) else {
+            continue;
+        };
+        let sub = decode_pb_fields(f1_bytes);
+
+        // Try sub-field 2 first (token usage sub-message), fall back to field 4
+        let usage_fields = sub
+            .get(&2)
+            .and_then(|v| v.first())
+            .and_then(|v| v.as_bytes())
+            .map(|b| decode_pb_fields(b))
+            .or_else(|| {
+                sub.get(&4)
+                    .and_then(|v| v.first())
+                    .and_then(|v| v.as_bytes())
+                    .map(|b| decode_pb_fields(b))
+            });
+
+        let Some(usage) = usage_fields else {
+            continue;
+        };
+
+        let fresh_input = usage
+            .get(&2)
+            .and_then(|v| v.first())
+            .and_then(|v| v.as_varint())
+            .unwrap_or(0);
+        let cached_input = usage
+            .get(&5)
+            .and_then(|v| v.first())
+            .and_then(|v| v.as_varint())
+            .unwrap_or(0);
+        let output = usage
+            .get(&3)
+            .and_then(|v| v.first())
+            .and_then(|v| v.as_varint())
+            .unwrap_or(0);
+        let reasoning = usage
+            .get(&10)
+            .and_then(|v| v.first())
+            .and_then(|v| v.as_varint())
+            .unwrap_or(0);
+
+        let tokens = TokenBreakdown {
+            fresh_input,
+            cached_input,
+            cache_write: 0,
+            output,
+            reasoning,
+        };
+
+        if tokens.total() == 0 {
+            continue;
+        }
+
+        // Extract request ID as dedup key from sub-field 11
+        let dedup_id = usage
+            .get(&11)
+            .and_then(|v| v.first())
+            .and_then(|v| v.as_bytes())
+            .and_then(|b| std::str::from_utf8(b).ok())
+            .map(|s| format!("agy:{}:{}", session_key, s));
+
+        // Try to extract timestamp from sub-message field 1 (protobuf Timestamp)
+        let timestamp_ms = sub
+            .get(&3)
+            .and_then(|v| v.first())
+            .and_then(|v| v.as_varint())
+            .map(|secs| secs as i64 * 1000)
+            .or_else(|| {
+                // Fall back to outer field 3 varint as a timestamp
+                fields
+                    .get(&3)
+                    .and_then(|v| v.first())
+                    .and_then(|v| v.as_varint())
+                    .map(|secs| secs as i64 * 1000)
+            })
+            .unwrap_or_else(|| {
+                // Last resort: use file mtime
+                std::fs::metadata(path)
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .map(|t| {
+                        t.duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as i64
+                    })
+                    .unwrap_or(0)
+            });
+
+        events.push(UsageEvent {
+            provider: Provider::Antigravity,
+            timestamp_ms,
+            model_name: "gemini-auto".to_owned(),
+            session_key: session_key.to_owned(),
+            working_dir: working_dir.clone(),
+            tokens,
+            reported_cost: None,
+            dedup_id,
+        });
+    }
+
+    Some(events)
 }
 
 // ---------------------------------------------------------------------------
@@ -359,10 +923,10 @@ pub fn scan_all(window: TimeWindow, pricing: &PricingTable) -> UsageSnapshot {
         .map(|dt| dt.timestamp_millis() + 999) // include full last second
         .unwrap_or(i64::MAX);
 
-    // ── Scan files ─────────────────────────────────────────────────
+    // ── Scan transcript-based providers (Claude, Codex, Kimi) ──────
     let mut all_events = Vec::new();
 
-    for provider in Provider::ALL {
+    for provider in [Provider::Claude, Provider::Codex, Provider::Kimi] {
         if let Some(root) = transcript_root(provider) {
             let files = discover_transcripts(&root, start_ts_ms);
             for file in files {
@@ -372,6 +936,10 @@ pub fn scan_all(window: TimeWindow, pricing: &PricingTable) -> UsageSnapshot {
             }
         }
     }
+
+    // ── Scan SQLite-based providers ────────────────────────────────
+    all_events.extend(scan_opencode(start_ts_ms));
+    all_events.extend(scan_antigravity(start_ts_ms));
 
     // ── Cross-file dedup + time filter ─────────────────────────────
     let mut unique_events = Vec::new();
@@ -463,9 +1031,7 @@ pub fn scan_all(window: TimeWindow, pricing: &PricingTable) -> UsageSnapshot {
         while cursor <= end_date {
             let agg = daily_map.remove(&cursor).unwrap_or(DailyAggregate {
                 date: cursor,
-                total_tokens: 0,
-                cost_usd: 0.0,
-                by_provider: [ProviderMetrics::default(), ProviderMetrics::default()],
+                ..Default::default()
             });
             filled.push(agg);
             cursor = cursor

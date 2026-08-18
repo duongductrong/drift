@@ -39,6 +39,9 @@ pub struct Theme {
     // App-specific: provider chart colors
     pub chart_claude: Hsla,
     pub chart_codex: Hsla,
+    pub chart_kimi: Hsla,
+    pub chart_opencode: Hsla,
+    pub chart_antigravity: Hsla,
 }
 
 #[derive(Clone, Copy)]
@@ -87,6 +90,9 @@ impl Theme {
 
             chart_claude: rgb(0xD97757).into(),
             chart_codex: rgb(0x62C987).into(),
+            chart_kimi: rgb(0x8B5CF6).into(),
+            chart_opencode: rgb(0x06B6D4).into(),
+            chart_antigravity: rgb(0x4285F4).into(),
         }
     }
 
@@ -120,6 +126,9 @@ impl Theme {
 
             chart_claude: rgb(0xC85F44).into(),
             chart_codex: rgb(0x2F8F52).into(),
+            chart_kimi: rgb(0x7C3AED).into(),
+            chart_opencode: rgb(0x0891B2).into(),
+            chart_antigravity: rgb(0x1A73E8).into(),
         }
     }
 }

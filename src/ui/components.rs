@@ -222,5 +222,8 @@ pub fn provider_color(theme: &Theme, provider: crate::core::types::Provider) -> 
     match provider {
         crate::core::types::Provider::Claude => theme.chart_claude,
         crate::core::types::Provider::Codex => theme.chart_codex,
+        crate::core::types::Provider::Kimi => theme.chart_kimi,
+        crate::core::types::Provider::OpenCode => theme.chart_opencode,
+        crate::core::types::Provider::Antigravity => theme.chart_antigravity,
     }
 }
