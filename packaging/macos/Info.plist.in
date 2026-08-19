@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template for the bundle's Info.plist. `scripts/bundle-macos.sh` substitutes
+  the @PLACEHOLDER@ values.
+
+  Two version keys and two of our own, because they answer different questions:
+  Apple's keys must be dotted integers, so a beta's `-beta.1` suffix cannot go
+  in them; `DriftReleaseVersion` and `DriftReleaseChannel` carry the full,
+  channel-identifying version for anyone inspecting a downloaded build.
+-->
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Drift</string>
+    <key>CFBundleDisplayName</key>
+    <string>Drift</string>
+    <key>CFBundleIdentifier</key>
+    <string>@BUNDLE_ID@</string>
+    <key>CFBundleExecutable</key>
+    <string>drift</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>@SHORT_VERSION@</string>
+    <key>CFBundleVersion</key>
+    <string>@SHORT_VERSION@</string>
+    <key>DriftReleaseVersion</key>
+    <string>@VERSION@</string>
+    <key>DriftReleaseChannel</key>
+    <string>@CHANNEL@</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>11.0</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.developer-tools</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSSupportsAutomaticGraphicsSwitching</key>
+    <true/>
+</dict>
+</plist>

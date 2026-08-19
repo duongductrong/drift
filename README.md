@@ -15,8 +15,9 @@ coding agents. It reads the transcripts and local databases those tools already 
 to your machine, aggregates them, and renders the result as a chart with per-provider
 and per-model breakdowns.
 
-Everything happens locally: no account, no API keys, no network calls. Files are opened
-read-only.
+Everything happens locally: no account, no API keys, and no telemetry. Your transcripts
+are opened read-only and never leave the machine. The one request Drift makes is the
+update check — a public GitHub Releases lookup you can turn off in Settings.
 
 ## Features
 
@@ -37,6 +38,9 @@ read-only.
   not inflated.
 - **Settings** — theme (system / light / dark), default range, scan-on-launch, model row
   count, and a per-provider on/off switch that narrows what gets scanned.
+- **Update checks** — Drift asks GitHub whether a newer release exists, on the Stable or
+  Beta channel. Stable never offers a pre-release; Beta offers whichever build is newest.
+  Off in one click, and it downloads nothing by itself.
 - **Native chrome** — custom toolbar, macOS menu bar, and keyboard shortcuts.
 
 ## Data sources
@@ -87,6 +91,12 @@ and takes a while. Later builds are incremental.
 
 ## Install
 
+Download the latest DMG from [Releases](https://github.com/duongductrong/drift/releases),
+drag Drift to Applications, and open it. Beta builds are published as pre-releases; a
+stable install is never offered one unless you switch channel in Settings.
+
+From source:
+
 ```bash
 git clone https://github.com/duongductrong/drift.git
 cd drift
@@ -98,6 +108,14 @@ To install the binary onto your `PATH`:
 ```bash
 cargo install --path .
 ```
+
+To build the same `.app` and DMG the release workflow does:
+
+```bash
+scripts/bundle-macos.sh          # unsigned, into dist/
+```
+
+Releasing is documented in [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Usage
 
@@ -119,12 +137,26 @@ Settings are stored as JSON at `~/Library/Application Support/drift/settings.jso
 and `~/.config/drift/settings.json` on Linux. The file is optional and hand-editable;
 unknown or corrupt values fall back to the defaults.
 
+### Updates
+
+Settings → Updates holds the whole feature: a switch for the check on launch, the channel
+to follow, and a **Check now** button that works even with the launch check off. When a
+newer build exists the toolbar grows an *Update to …* button; both it and **Download**
+open the release page — Drift never installs anything itself.
+
+A build's own version decides which channel it starts on, so installing a beta opts you
+into betas and nothing moves a stable install onto one silently. Semantic versions are
+compared properly, `0.2.0-beta.10` included, and a beta install is offered `0.2.0` the
+moment it ships. The macOS menu has **Check for Updates…** under the app menu.
+
 ## Development
 
 ```bash
-cargo test     # unit tests for bucketing, pricing, formatting, settings, scroll math
+cargo test     # bucketing, pricing, formatting, settings, scroll math, update rules
 cargo check
 cargo run      # debug build
+
+cargo test -- --ignored --nocapture   # the update check against the real GitHub API
 ```
 
 Layout:
@@ -135,12 +167,17 @@ src/
     scanner.rs    per-provider parsers, dedup, snapshot building
     pricing.rs    built-in rate table and cost math
     types.rs      snapshots, buckets, time windows, metrics
+    update.rs     GitHub release lookup, channels, version comparison
   ui/         GPUI views and components
     app_view.rs   root view, scan orchestration, dialog focus
     dashboard.rs  the page: filters, stats, chart, breakdowns
   settings.rs persisted preferences, published as a GPUI global
   theme.rs    light/dark palettes and provider colors
   keymap.rs   actions, key bindings, macOS menu bar
+scripts/      bundle-macos.sh — .app, DMG, signing, notarization
+.github/
+  scripts/    release-notes.sh — notes from the commits since the last release
+  workflows/  ci.yml (tests, unsigned build) and release.yml (manual, beta/stable)
 ```
 
 `core` takes its inputs as plain arguments and knows nothing about settings or rendering,

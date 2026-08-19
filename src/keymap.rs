@@ -49,6 +49,8 @@ actions!(
         Refresh,
         /// Open the settings dialog.
         OpenSettings,
+        /// Ask GitHub whether a newer release exists.
+        CheckForUpdates,
         /// Dismiss the frontmost dialog.
         Cancel,
         /// Hide the application.
@@ -117,6 +119,8 @@ fn set_menus(cx: &mut App) {
         // The leading menu is the application menu; macOS titles it with the
         // process name, so the name given here is never shown.
         Menu::new("Drift").items([
+            MenuItem::action("Check for Updates…", CheckForUpdates),
+            MenuItem::separator(),
             MenuItem::action("Settings…", OpenSettings),
             MenuItem::separator(),
             MenuItem::os_submenu("Services", SystemMenuType::Services),

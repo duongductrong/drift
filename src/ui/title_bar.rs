@@ -109,6 +109,14 @@ impl Toolbar {
         self.right.push(element.into_any_element());
         self
     }
+
+    /// As [`Toolbar::right`], for a control that is usually absent — the
+    /// update badge, which only appears once there is an update.
+    pub fn children_right(mut self, elements: impl IntoIterator<Item = impl IntoElement>) -> Self {
+        self.right
+            .extend(elements.into_iter().map(IntoElement::into_any_element));
+        self
+    }
 }
 
 impl RenderOnce for Toolbar {

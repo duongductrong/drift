@@ -11,6 +11,10 @@ serde_json = "1.0"
 chrono = "0.4"
 dirs = "6.0"
 rusqlite = { version = "0.33", features = ["bundled"] }
+# Update checking: a small blocking HTTP client with pure-Rust TLS, and semver
+# so pre-release ordering is the spec's rather than ours.
+ureq = "3"
+semver = "1"
 
 [profile.dev]
 opt-level = 1

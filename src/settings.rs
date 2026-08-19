@@ -4,6 +4,7 @@ use gpui::{App, Global};
 use serde::{Deserialize, Serialize};
 
 use crate::core::types::{Provider, TimeWindow};
+use crate::core::update::{self as update, Channel};
 use crate::theme::{self, ThemeMode};
 
 // ---------------------------------------------------------------------------
@@ -40,6 +41,14 @@ pub struct Settings {
     /// provider added in a later release is counted by default rather than
     /// silently missing from everyone's totals.
     pub disabled_providers: Vec<Provider>,
+    /// Whether launching the app asks GitHub whether a newer one exists.
+    ///
+    /// This is the only thing Drift ever sends over the network, so it is a
+    /// setting rather than an assumption: off means the app stays entirely
+    /// local, and the button in Settings still works when asked.
+    pub check_for_updates: bool,
+    /// Which releases the check offers — see [`Channel`].
+    pub update_channel: Channel,
 }
 
 impl Default for Settings {
@@ -50,6 +59,11 @@ impl Default for Settings {
             scan_on_launch: true,
             model_rows: 15,
             disabled_providers: Vec::new(),
+            check_for_updates: true,
+            // Whichever kind of build this is, keep the user on that line:
+            // installing a beta is how someone opts into betas, and nobody on
+            // a stable build is moved onto one without asking.
+            update_channel: update::current_channel(),
         }
     }
 }
@@ -93,6 +107,8 @@ pub enum SettingsChange {
     ScanOnLaunch(bool),
     ModelRows(usize),
     ToggleProvider(Provider),
+    CheckForUpdates(bool),
+    UpdateChannel(Channel),
     RestoreDefaults,
 }
 
@@ -114,6 +130,8 @@ impl SettingsChange {
                     settings.disabled_providers.push(provider);
                 }
             }
+            SettingsChange::CheckForUpdates(enabled) => settings.check_for_updates = enabled,
+            SettingsChange::UpdateChannel(channel) => settings.update_channel = channel,
             SettingsChange::RestoreDefaults => *settings = Settings::default(),
         }
     }
@@ -127,7 +145,9 @@ impl SettingsChange {
             SettingsChange::Theme(_)
             | SettingsChange::DefaultRange(_)
             | SettingsChange::ScanOnLaunch(_)
-            | SettingsChange::ModelRows(_) => false,
+            | SettingsChange::ModelRows(_)
+            | SettingsChange::CheckForUpdates(_)
+            | SettingsChange::UpdateChannel(_) => false,
         }
     }
 }
@@ -190,6 +210,10 @@ struct StoredSettings {
     model_rows: Option<usize>,
     #[serde(default)]
     disabled_providers: Vec<String>,
+    #[serde(default)]
+    check_for_updates: Option<bool>,
+    #[serde(default)]
+    update_channel: String,
 }
 
 impl StoredSettings {
@@ -204,6 +228,8 @@ impl StoredSettings {
                 .iter()
                 .map(|p| provider_key(*p).to_owned())
                 .collect(),
+            check_for_updates: Some(settings.check_for_updates),
+            update_channel: settings.update_channel.key().to_owned(),
         }
     }
 
@@ -222,6 +248,9 @@ impl StoredSettings {
                 .iter()
                 .filter_map(|key| provider_from_key(key))
                 .collect(),
+            check_for_updates: self.check_for_updates.unwrap_or(defaults.check_for_updates),
+            update_channel: Channel::from_key(&self.update_channel)
+                .unwrap_or(defaults.update_channel),
         }
     }
 }
@@ -319,6 +348,8 @@ mod tests {
             scan_on_launch: false,
             model_rows: 5,
             disabled_providers: vec![Provider::Kimi, Provider::Antigravity],
+            check_for_updates: false,
+            update_channel: Channel::Beta,
         };
         assert_eq!(round_trip(&settings), settings);
     }
@@ -387,6 +418,31 @@ mod tests {
     }
 
     #[test]
+    fn an_older_file_without_the_update_keys_keeps_the_shipped_defaults() {
+        // The keys arrived after the first release, so a settings file written
+        // by it has neither — and must not read as "updates off".
+        let stored: StoredSettings =
+            serde_json::from_str(r#"{"theme":"dark","model_rows":10}"#).unwrap();
+        let settings = stored.into_settings();
+        assert_eq!(settings.check_for_updates, Settings::default().check_for_updates);
+        assert_eq!(settings.update_channel, Settings::default().update_channel);
+    }
+
+    #[test]
+    fn an_unknown_channel_falls_back_rather_than_opting_into_betas() {
+        let stored: StoredSettings =
+            serde_json::from_str(r#"{"update_channel":"nightly"}"#).unwrap();
+        assert_eq!(
+            stored.into_settings().update_channel,
+            Settings::default().update_channel
+        );
+
+        let stored: StoredSettings =
+            serde_json::from_str(r#"{"update_channel":"beta"}"#).unwrap();
+        assert_eq!(stored.into_settings().update_channel, Channel::Beta);
+    }
+
+    #[test]
     fn only_changes_to_what_is_counted_cost_a_rescan() {
         assert!(SettingsChange::ToggleProvider(Provider::Claude).requires_rescan());
         assert!(SettingsChange::RestoreDefaults.requires_rescan());
@@ -395,6 +451,22 @@ mod tests {
         assert!(!SettingsChange::ModelRows(5).requires_rescan());
         assert!(!SettingsChange::ScanOnLaunch(false).requires_rescan());
         assert!(!SettingsChange::DefaultRange(TimeWindow::Last7Days).requires_rescan());
+        assert!(!SettingsChange::CheckForUpdates(false).requires_rescan());
+        assert!(!SettingsChange::UpdateChannel(Channel::Beta).requires_rescan());
+    }
+
+    #[test]
+    fn the_update_channel_is_a_plain_switch() {
+        let mut settings = Settings::default();
+
+        SettingsChange::UpdateChannel(Channel::Beta).apply_to(&mut settings);
+        assert_eq!(settings.update_channel, Channel::Beta);
+
+        SettingsChange::UpdateChannel(Channel::Stable).apply_to(&mut settings);
+        assert_eq!(settings.update_channel, Channel::Stable);
+
+        SettingsChange::CheckForUpdates(false).apply_to(&mut settings);
+        assert!(!settings.check_for_updates);
     }
 
     #[test]
@@ -405,6 +477,8 @@ mod tests {
             scan_on_launch: false,
             model_rows: 25,
             disabled_providers: vec![Provider::Claude],
+            check_for_updates: false,
+            update_channel: Channel::Beta,
         };
         SettingsChange::RestoreDefaults.apply_to(&mut settings);
         assert_eq!(settings, Settings::default());

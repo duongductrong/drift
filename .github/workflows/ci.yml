@@ -1,0 +1,100 @@
+# Checks on every change, plus an unsigned build on demand.
+#
+# The `package` job is the development counterpart to a release: same script,
+# same bundle layout, no Apple credentials. It produces a DMG you can install
+# and run — enough to test a change end to end, including the update checker —
+# without publishing anything.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: "Also build an unsigned .app and DMG"
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --check
+        # Formatting is worth reporting but not worth failing a build over,
+        # since the tree was not rustfmt-clean when this landed.
+        continue-on-error: true
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+        continue-on-error: true
+
+      # `--locked` is the point of this step as much as the tests are: it fails
+      # if Cargo.lock and Cargo.toml have drifted apart.
+      - name: Test
+        run: cargo test --locked
+
+  package:
+    name: Unsigned build
+    # Only when asked for: the release build takes far longer than the tests,
+    # and nothing on a pull request needs a DMG.
+    if: github.event_name == 'workflow_dispatch' && inputs.package
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: package
+
+      - name: Build the app and DMG
+        id: bundle
+        env:
+          # No signing identity and no notarization key here on purpose — see
+          # scripts/bundle-macos.sh, which builds unsigned when they are absent.
+          DRIFT_UPDATE_REPO: ${{ github.repository }}
+        run: scripts/bundle-macos.sh --channel beta
+
+      - name: Upload the DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.bundle.outputs.dmg_name }}
+          path: ${{ steps.bundle.outputs.dmg_path }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Say how to open it
+        run: |
+          {
+            echo "### Unsigned development build"
+            echo
+            echo "macOS will refuse this on first open because it is not signed."
+            echo "Right-click the app in Applications and choose **Open**, or run:"
+            echo
+            echo '```'
+            echo "xattr -dr com.apple.quarantine /Applications/Drift.app"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

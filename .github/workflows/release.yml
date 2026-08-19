@@ -1,0 +1,302 @@
+# Manual releases, one channel at a time.
+#
+# Only a maintainer can start this — `workflow_dispatch` is restricted to
+# accounts with write access, and the environment below adds an approval gate
+# if one is configured on it. There is no tag trigger and no release on push:
+# publishing is always a decision someone makes.
+#
+# The channel input is what everything else follows from. `beta` publishes a
+# GitHub pre-release, which the in-app checker only offers to users on the Beta
+# channel; `stable` publishes a normal release, which everyone is offered. See
+# src/core/update.rs for the other half of that contract.
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: "Release channel"
+        type: choice
+        required: true
+        default: beta
+        options:
+          - beta
+          - stable
+      version:
+        description: >-
+          Version to release, without the leading v (e.g. 0.2.0, or
+          0.2.0-beta.1). Leave empty to use Cargo.toml's version — on the beta
+          channel the next free -beta.N suffix is added for you.
+        type: string
+        required: false
+      draft:
+        description: "Publish as a draft, so the notes can be edited first"
+        type: boolean
+        required: false
+        default: false
+
+# The release commits nothing, but it does create a tag and a release.
+permissions:
+  contents: write
+
+concurrency:
+  # Two releases at once would race for the same tag.
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish (${{ inputs.channel }})
+    # macOS is not a preference here: the .app, the DMG, codesign and
+    # notarytool all need it.
+    runs-on: macos-14
+    # Attach Apple credentials to an environment rather than to the repository,
+    # so they are only readable by this workflow — and so a required reviewer
+    # can be configured on it without touching this file.
+    environment: release
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out the full history
+        uses: actions/checkout@v4
+        with:
+          # Release notes are generated from the commits since the previous
+          # tag, so a shallow clone would have nothing to read.
+          fetch-depth: 0
+
+      - name: Resolve the version and tag
+        id: version
+        env:
+          CHANNEL: ${{ inputs.channel }}
+          REQUESTED: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          version="$REQUESTED"
+          if [[ -z "$version" ]]; then
+            version="$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -1)"
+          fi
+          version="${version#v}"
+
+          # Semver, with an optional pre-release and build suffix. Anything
+          # else would produce a tag the update checker cannot parse, and so a
+          # release nobody is ever offered.
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::'$version' is not a semantic version" >&2
+            exit 1
+          fi
+
+          if [[ "$CHANNEL" == "beta" ]]; then
+            # A beta must carry a pre-release suffix — that suffix is what
+            # keeps it away from stable users even if the pre-release flag is
+            # ever set wrong. Add the next free one when it has none.
+            if [[ "$version" != *-* ]]; then
+              n=1
+              while git rev-parse -q --verify "refs/tags/v$version-beta.$n" >/dev/null; do
+                n=$((n + 1))
+              done
+              version="$version-beta.$n"
+            fi
+          else
+            if [[ "$version" == *-* ]]; then
+              echo "::error::a stable release cannot be a pre-release version ($version)" >&2
+              exit 1
+            fi
+          fi
+
+          tag="v$version"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "::error::tag $tag already exists" >&2
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Releasing $tag on the $CHANNEL channel"
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          # GPUI is pulled from git and dominates the build; keying on the
+          # channel keeps beta and stable from evicting each other.
+          key: release-${{ inputs.channel }}
+
+      - name: Stamp the version into the build
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          # The binary reports env!("CARGO_PKG_VERSION"), so this is what makes
+          # a running app compare itself against the right release. Nothing is
+          # committed: the tag is the record of what was built.
+          awk -v v="$VERSION" '/^version = / && !done { print "version = \"" v "\""; done = 1; next } { print }' \
+            Cargo.toml > Cargo.toml.stamped
+          mv Cargo.toml.stamped Cargo.toml
+
+          # Re-lock the workspace member only, so `--locked` builds below still
+          # agree with the manifest and no dependency moves underneath us.
+          cargo update --workspace --offline || cargo update --workspace
+
+          grep -m1 '^version' Cargo.toml
+
+      - name: Run the tests
+        run: cargo test --release --locked
+
+      # Secrets never reach the disk in plain form and never appear in a log:
+      # GitHub masks them in output, the certificate is written to a RUNNER_TEMP
+      # file that is deleted below, and the keychain is created for this job.
+      - name: Import the signing certificate
+        id: signing
+        env:
+          CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${CERTIFICATE_P12:-}" ]]; then
+            echo "No signing certificate configured — this will be an unsigned build"
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password="$(uuidgen)"
+          certificate="$RUNNER_TEMP/certificate.p12"
+
+          echo -n "$CERTIFICATE_P12" | base64 --decode > "$certificate"
+
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$certificate" -k "$keychain" \
+            -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          # Lets codesign use the key without an interactive prompt, which
+          # would otherwise hang the job forever.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" login.keychain-db
+
+          rm -f "$certificate"
+          echo "available=true" >> "$GITHUB_OUTPUT"
+          echo "keychain=$keychain" >> "$GITHUB_OUTPUT"
+
+      - name: Write the notarization key
+        id: notary
+        env:
+          API_KEY: ${{ secrets.APPLE_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${API_KEY:-}" ]]; then
+            echo "No notarization key configured — the build will not be notarized"
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          key_path="$RUNNER_TEMP/notary.p8"
+          echo -n "$API_KEY" | base64 --decode > "$key_path"
+          chmod 600 "$key_path"
+          echo "available=true" >> "$GITHUB_OUTPUT"
+          echo "key_path=$key_path" >> "$GITHUB_OUTPUT"
+
+      - name: Build the app and DMG
+        id: bundle
+        env:
+          # Empty when the secrets are absent, which is exactly how the script
+          # decides between an unsigned and a signed build.
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY_PATH: ${{ steps.notary.outputs.key_path }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          BUNDLE_ID: ${{ vars.BUNDLE_ID || 'com.duongductrong.drift' }}
+          # Stamped in so a fork's builds check the fork's releases.
+          DRIFT_UPDATE_REPO: ${{ github.repository }}
+        run: |
+          scripts/bundle-macos.sh \
+            --version "${{ steps.version.outputs.version }}" \
+            --channel "${{ inputs.channel }}"
+
+      - name: Verify the DMG opens and carries the right metadata
+        env:
+          DMG: ${{ steps.bundle.outputs.dmg_path }}
+          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
+          EXPECTED_CHANNEL: ${{ inputs.channel }}
+        run: |
+          set -euo pipefail
+          mount_point="$(mktemp -d)"
+          hdiutil attach "$DMG" -nobrowse -readonly -mountpoint "$mount_point" >/dev/null
+          plist="$mount_point/Drift.app/Contents/Info.plist"
+
+          version="$(/usr/libexec/PlistBuddy -c 'Print :DriftReleaseVersion' "$plist")"
+          channel="$(/usr/libexec/PlistBuddy -c 'Print :DriftReleaseChannel' "$plist")"
+          echo "Bundle reports $version on the $channel channel"
+
+          # The artifact and the release must agree about what they are: this
+          # is the metadata a user inspects on a downloaded build.
+          [[ "$version" == "$EXPECTED_VERSION" ]] || { echo "::error::bundle version $version != $EXPECTED_VERSION"; exit 1; }
+          [[ "$channel" == "$EXPECTED_CHANNEL" ]] || { echo "::error::bundle channel $channel != $EXPECTED_CHANNEL"; exit 1; }
+
+          if [[ "${{ steps.signing.outputs.available }}" == "true" ]]; then
+            codesign --verify --deep --strict "$mount_point/Drift.app"
+            if [[ "${{ steps.notary.outputs.available }}" == "true" ]]; then
+              # The check Gatekeeper itself runs on first launch.
+              spctl --assess --type execute --verbose "$mount_point/Drift.app"
+            fi
+          fi
+
+          hdiutil detach "$mount_point" >/dev/null
+
+      - name: Generate the release notes
+        id: notes
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          notes_file="$RUNNER_TEMP/release-notes.md"
+          .github/scripts/release-notes.sh \
+            --version "${{ steps.version.outputs.version }}" \
+            --channel "${{ inputs.channel }}" > "$notes_file"
+          echo "path=$notes_file" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Release notes for ${{ steps.version.outputs.tag }}"
+            echo
+            cat "$notes_file"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          CHANNEL: ${{ inputs.channel }}
+          DMG: ${{ steps.bundle.outputs.dmg_path }}
+          NOTES: ${{ steps.notes.outputs.path }}
+          DRAFT: ${{ inputs.draft }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          args=(--title "Drift $VERSION" --notes-file "$NOTES" --target "$GITHUB_SHA")
+
+          # The pre-release flag is what the update checker reads to keep a
+          # beta away from stable users.
+          if [[ "$CHANNEL" == "beta" ]]; then
+            args+=(--prerelease)
+          else
+            args+=(--latest)
+          fi
+
+          # A draft is published by hand afterwards, which is the review step:
+          # drafts are invisible to the API the checker reads, so nobody is
+          # offered a release still being edited.
+          if [[ "$DRAFT" == "true" ]]; then
+            args+=(--draft)
+          fi
+
+          gh release create "$TAG" "$DMG" "${args[@]}"
+          echo "Published $TAG ($CHANNEL)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove the signing keychain
+        if: always() && steps.signing.outputs.available == 'true'
+        run: |
+          security list-keychains -d user -s login.keychain-db
+          security delete-keychain "${{ steps.signing.outputs.keychain }}" || true
+          rm -f "$RUNNER_TEMP/notary.p8"

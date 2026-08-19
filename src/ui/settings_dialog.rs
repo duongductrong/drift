@@ -7,6 +7,7 @@ use gpui::{
 
 use crate::core::scanner;
 use crate::core::types::{Provider, TimeWindow};
+use crate::core::update::{self, Channel, CheckState};
 use crate::keymap::{Cancel, SETTINGS_DIALOG_CONTEXT};
 use crate::settings::{Settings, SettingsChange, MODEL_ROW_OPTIONS};
 use crate::theme::{Theme, ThemeMode};
@@ -42,8 +43,13 @@ pub struct SettingsDialog {
     settings: Settings,
     /// Focused while the dialog is open, so Escape reaches it.
     focus: FocusHandle,
+    /// What the last update check found — owned by the root view, since a
+    /// check outlives the dialog that asked for it.
+    update_state: CheckState,
     on_change: Option<ChangeCallback>,
     on_close: Option<PlainCallback>,
+    on_check_updates: Option<PlainCallback>,
+    on_download: Option<PlainCallback>,
 }
 
 impl SettingsDialog {
@@ -51,9 +57,17 @@ impl SettingsDialog {
         Self {
             settings,
             focus,
+            update_state: CheckState::Idle,
             on_change: None,
             on_close: None,
+            on_check_updates: None,
+            on_download: None,
         }
+    }
+
+    pub fn update_state(mut self, state: CheckState) -> Self {
+        self.update_state = state;
+        self
     }
 
     pub fn on_change(
@@ -70,6 +84,31 @@ impl SettingsDialog {
     ) -> Self {
         self.on_close = Some(Arc::new(handler));
         self
+    }
+
+    pub fn on_check_updates(
+        mut self,
+        handler: impl Fn(&mut Window, &mut App) + Send + Sync + 'static,
+    ) -> Self {
+        self.on_check_updates = Some(Arc::new(handler));
+        self
+    }
+
+    pub fn on_download(
+        mut self,
+        handler: impl Fn(&mut Window, &mut App) + Send + Sync + 'static,
+    ) -> Self {
+        self.on_download = Some(Arc::new(handler));
+        self
+    }
+}
+
+/// Wraps a plain callback in a click handler, mirroring [`report`].
+fn invoke(handler: Option<PlainCallback>) -> impl Fn(&mut Window, &mut App) + 'static {
+    move |window, cx| {
+        if let Some(handler) = &handler {
+            handler(window, cx);
+        }
     }
 }
 
@@ -225,6 +264,52 @@ impl RenderOnce for SettingsDialog {
             )],
         );
 
+        // ── Updates ────────────────────────────────────────────────
+        //
+        // The only network feature in the app, so it says what it does: the
+        // toggle governs the check on launch, and the button asks on demand
+        // even when the toggle is off.
+        let channel_options = Channel::ALL
+            .into_iter()
+            .map(|channel| {
+                Segment::new(
+                    channel.label(),
+                    channel == settings.update_channel,
+                    emit(SettingsChange::UpdateChannel(channel)),
+                )
+            })
+            .collect();
+
+        let updates = section(
+            "Updates",
+            vec![
+                row(
+                    "Check on launch",
+                    "Asks GitHub for the latest release. Nothing else is sent.",
+                    toggle(
+                        "settings-check-updates",
+                        settings.check_for_updates,
+                        emit(SettingsChange::CheckForUpdates(!settings.check_for_updates)),
+                        cx,
+                    )
+                    .into_any_element(),
+                    cx,
+                ),
+                row(
+                    "Channel",
+                    "Beta also offers pre-releases; Stable never does.",
+                    segmented("settings-update-channel", channel_options, cx).into_any_element(),
+                    cx,
+                ),
+                update_status_row(
+                    &self.update_state,
+                    self.on_check_updates.clone(),
+                    self.on_download.clone(),
+                    cx,
+                ),
+            ],
+        );
+
         let body = div()
             .id("settings-body")
             .flex_1()
@@ -238,7 +323,8 @@ impl RenderOnce for SettingsDialog {
             .child(appearance)
             .child(data_sources)
             .child(launch)
-            .child(dashboard);
+            .child(dashboard)
+            .child(updates);
 
         // ── Footer ─────────────────────────────────────────────────
         let reset = self.on_change.clone();
@@ -373,6 +459,58 @@ fn stacked_row(
         .gap(px(8.0))
         .child(label_block(label, detail, cx))
         .child(control)
+        .into_any_element()
+}
+
+/// The status line, with the button that acts on it.
+///
+/// Which button that is *is* the state: an offer becomes "Download", anything
+/// else stays "Check now", and a check in flight disables both so it cannot be
+/// started twice.
+fn update_status_row(
+    state: &CheckState,
+    on_check: Option<PlainCallback>,
+    on_download: Option<PlainCallback>,
+    cx: &App,
+) -> AnyElement {
+    let theme = Theme::current(cx);
+    let summary = SharedString::from(state.summary(&update::current_version()));
+    let checking = state.is_checking();
+
+    let action = match state.available() {
+        Some(_) => Button::new("settings-update-download", "Download").on_click(invoke(on_download)),
+        None => Button::new("settings-update-check", "Check now")
+            .subtle()
+            .on_click(invoke(on_check)),
+    };
+
+    div()
+        .py(px(7.0))
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(12.0))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_size(px(11.5))
+                .text_color(if state.available().is_some() {
+                    theme.text
+                } else {
+                    theme.text_secondary
+                })
+                .truncate()
+                .child(summary),
+        )
+        .child(
+            div()
+                .flex_none()
+                // A check in flight has nothing to click: the line above
+                // already says so, and a second request would only race it.
+                .when(checking, |el| el.opacity(0.5))
+                .when(!checking, |el| el.child(action)),
+        )
         .into_any_element()
 }
 

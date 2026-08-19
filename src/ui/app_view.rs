@@ -2,17 +2,29 @@ use gpui::{div, prelude::*, px, Context, Entity, FocusHandle, SharedString, Wind
 use crate::theme::Theme;
 use crate::core::scanner;
 use crate::core::pricing::PricingTable;
-use crate::keymap::{CloseWindow, Minimize, OpenSettings, Refresh, ToggleFullScreen, Zoom};
+use crate::core::update::{self, CheckState};
+use crate::keymap::{
+    CheckForUpdates, CloseWindow, Minimize, OpenSettings, Refresh, ToggleFullScreen, Zoom,
+};
 use crate::settings::{self, Settings, SettingsChange};
-use super::components::IconButton;
+use super::components::{Button, IconButton};
 use super::dashboard::{Dashboard, WindowChanged};
 use super::icons::Icon;
 use super::settings_dialog::SettingsDialog;
 use super::title_bar::Toolbar;
 
+/// How long after launch the update check runs.
+///
+/// Late enough that the first frame and the scan have the machine to
+/// themselves: nothing about the check is urgent, and it must never be what
+/// the user is waiting on.
+const UPDATE_CHECK_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+
 pub struct AppView {
     dashboard: Entity<Dashboard>,
     settings_open: bool,
+    /// Result of the last update check — see `core::update`.
+    update_state: CheckState,
     /// Holds focus whenever no dialog does. GPUI dispatches an action along
     /// the focus path, so the root has to be on it for the window and view
     /// shortcuts registered in `render` to be reachable at all.
@@ -51,11 +63,63 @@ impl AppView {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
 
+        // The check is deliberately not tied to opening the settings dialog:
+        // someone who never opens it should still learn that a new build
+        // exists, via the toolbar badge.
+        if settings.check_for_updates {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(UPDATE_CHECK_DELAY).await;
+                let _ = this.update(cx, |this, cx| this.start_update_check(cx));
+            })
+            .detach();
+        }
+
         Self {
             dashboard: dash,
             settings_open: false,
+            update_state: CheckState::Idle,
             focus,
             settings_focus: cx.focus_handle(),
+        }
+    }
+
+    /// Ask GitHub whether a newer build exists, on the channel the user is
+    /// subscribed to.
+    ///
+    /// Every failure mode ends as a `CheckState::Failed` the dialog can show;
+    /// nothing here can take the app down or block a frame, since the request
+    /// itself runs on the background executor.
+    fn start_update_check(&mut self, cx: &mut Context<Self>) {
+        // A second click while one is in flight would only race the first.
+        if self.update_state.is_checking() {
+            return;
+        }
+
+        let channel = Settings::current(cx).update_channel;
+        self.update_state = CheckState::Checking;
+        cx.notify();
+
+        cx.spawn(async move |this, cx| {
+            let outcome = cx
+                .background_executor()
+                .spawn(async move { update::check(channel) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.update_state = match outcome {
+                    Ok(status) => CheckState::Done(status),
+                    Err(error) => CheckState::Failed(error),
+                };
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Open the release page for the update on offer. Downloading and
+    /// installing stay the user's business — see `core::update`.
+    fn open_release_page(&mut self, cx: &mut Context<Self>) {
+        if let Some(release) = self.update_state.available() {
+            cx.open_url(&release.url);
         }
     }
 
@@ -115,6 +179,12 @@ impl AppView {
         if settings::update(cx, change) {
             self.start_scan(cx);
         }
+        // Switching channels asks a different question, so the answer on
+        // screen is stale the moment it changes.
+        if let SettingsChange::UpdateChannel(_) | SettingsChange::RestoreDefaults = change {
+            self.update_state = CheckState::Idle;
+            self.start_update_check(cx);
+        }
         cx.notify();
     }
 }
@@ -144,6 +214,18 @@ impl Render for AppView {
             this.open_settings(window, cx)
         });
 
+        // Shown only when there is something to act on, so the chrome stays
+        // empty in the normal case.
+        let update_badge = self.update_state.available().map(|release| {
+            let open = cx.listener(|this, _event: &(), _window: &mut Window, cx| {
+                this.open_release_page(cx)
+            });
+            let label = SharedString::from(format!("Update to {}", release.version));
+            Button::new("update-badge", label)
+                .subtle()
+                .on_click(move |window, cx| open(&(), window, cx))
+        });
+
         let toolbar = Toolbar::new()
             .left(
                 div()
@@ -158,6 +240,7 @@ impl Render for AppView {
                     .text_color(theme.text_tertiary)
                     .child(range_label),
             )
+            .children_right(update_badge)
             .right(
                 IconButton::new("scan-button", Icon::Refresh)
                     .tooltip(if is_loading {
@@ -184,8 +267,18 @@ impl Render for AppView {
                 this.close_settings(window, cx)
             });
 
+            let check = cx.listener(|this, _event: &(), _window: &mut Window, cx| {
+                this.start_update_check(cx)
+            });
+            let download = cx.listener(|this, _event: &(), _window: &mut Window, cx| {
+                this.open_release_page(cx)
+            });
+
             SettingsDialog::new(Settings::current(cx), self.settings_focus.clone())
+                .update_state(self.update_state.clone())
                 .on_change(move |c, window, cx| change(&c, window, cx))
+                .on_check_updates(move |window, cx| check(&(), window, cx))
+                .on_download(move |window, cx| download(&(), window, cx))
                 .on_close(move |window, cx| close(&(), window, cx))
         });
 
@@ -204,6 +297,13 @@ impl Render for AppView {
             .on_action(cx.listener(|this, _: &Refresh, _window, cx| this.rescan(cx)))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
                 this.open_settings(window, cx)
+            }))
+            // The menu item opens the dialog as well as checking: the status
+            // line there is where the answer appears, and an update that is
+            // asked for should never answer silently.
+            .on_action(cx.listener(|this, _: &CheckForUpdates, window, cx| {
+                this.open_settings(window, cx);
+                this.start_update_check(cx);
             }))
             .size_full()
             .bg(theme.canvas)
