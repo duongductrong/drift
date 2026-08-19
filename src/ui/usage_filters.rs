@@ -15,6 +15,10 @@ const CONTROL_HEIGHT: f32 = 26.0;
 const CONTROL_RADIUS: f32 = 7.0;
 /// Menu width — wide enough for "This month" plus its checkmark gutter.
 const MENU_WIDTH: f32 = 148.0;
+/// Hairline gap between the pill and its menu. Small enough that the menu
+/// reads as hanging off the trigger, wide enough that its shadow still
+/// separates the two edges.
+const MENU_GAP: f32 = 4.0;
 
 type WindowCallback = Arc<dyn Fn(TimeWindow, &mut Window, &mut App) + Send + Sync>;
 type GranularityCallback = Arc<dyn Fn(Granularity, &mut Window, &mut App) + Send + Sync>;
@@ -186,13 +190,25 @@ impl RenderOnce for UsageFilters {
                 );
             }
 
+            // The menu hangs off a zero-height rail pinned to the pill's
+            // bottom edge. `top_full` resolves against the pill's own measured
+            // height, so the seam stays right whatever the pill's height,
+            // border or padding become — and the rail, being out of flow with
+            // no in-flow sibling of its own, gives `Local` mode a definite
+            // origin instead of the static position it would otherwise inherit
+            // from whatever sits above it. All the anchor then has to say is
+            // how far below that seam the menu sits.
             deferred(
-                anchored()
-                    .anchor(Anchor::TopLeft)
-                    .position_mode(AnchoredPositionMode::Local)
-                    .position(point(px(0.0), px(CONTROL_HEIGHT + 5.0)))
-                    .snap_to_window_with_margin(px(8.0))
-                    .child(list),
+                div().absolute().top_full().left_0().child(
+                    anchored()
+                        .anchor(Anchor::TopLeft)
+                        .position_mode(AnchoredPositionMode::Local)
+                        .position(point(px(0.0), px(MENU_GAP)))
+                        // Keeps the menu on screen when the pill sits near an
+                        // edge, rather than flipping it away from its trigger.
+                        .snap_to_window_with_margin(px(8.0))
+                        .child(list),
+                ),
             )
             .with_priority(2)
         });
