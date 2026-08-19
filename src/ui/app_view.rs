@@ -2,6 +2,7 @@ use gpui::{div, prelude::*, px, Context, Entity, FocusHandle, SharedString, Wind
 use crate::theme::Theme;
 use crate::core::scanner;
 use crate::core::pricing::PricingTable;
+use crate::keymap::{CloseWindow, Minimize, OpenSettings, Refresh, ToggleFullScreen, Zoom};
 use crate::settings::{self, Settings, SettingsChange};
 use super::components::IconButton;
 use super::dashboard::{Dashboard, WindowChanged};
@@ -12,12 +13,16 @@ use super::title_bar::Toolbar;
 pub struct AppView {
     dashboard: Entity<Dashboard>,
     settings_open: bool,
+    /// Holds focus whenever no dialog does. GPUI dispatches an action along
+    /// the focus path, so the root has to be on it for the window and view
+    /// shortcuts registered in `render` to be reachable at all.
+    focus: FocusHandle,
     /// Focused while the settings dialog is open, so Escape closes it.
     settings_focus: FocusHandle,
 }
 
 impl AppView {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let settings = Settings::current(cx);
         let dashboard = cx.new(|_| Dashboard::new(settings.default_range));
 
@@ -43,11 +48,34 @@ impl AppView {
             .detach();
         }
 
+        let focus = cx.focus_handle();
+        window.focus(&focus, cx);
+
         Self {
             dashboard: dash,
             settings_open: false,
+            focus,
             settings_focus: cx.focus_handle(),
         }
+    }
+
+    fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.settings_open = true;
+        // Focus is what makes Escape reach the dialog.
+        window.focus(&self.settings_focus, cx);
+        cx.notify();
+    }
+
+    fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.settings_open {
+            return;
+        }
+        self.settings_open = false;
+        // The dialog's focus handle leaves the element tree with it, which
+        // would strand focus off the dispatch path and take every shortcut
+        // down with it.
+        window.focus(&self.focus, cx);
+        cx.notify();
     }
 
     fn start_scan(&mut self, cx: &mut Context<Self>) {
@@ -113,10 +141,7 @@ impl Render for AppView {
         // ── Toolbar ────────────────────────────────────────────────
         let rescan = cx.listener(|this, _event: &(), _window: &mut Window, cx| this.rescan(cx));
         let open_settings = cx.listener(|this, _event: &(), window: &mut Window, cx| {
-            this.settings_open = true;
-            // Focus is what makes Escape reach the dialog.
-            window.focus(&this.settings_focus, cx);
-            cx.notify();
+            this.open_settings(window, cx)
         });
 
         let toolbar = Toolbar::new()
@@ -155,9 +180,8 @@ impl Render for AppView {
             let change = cx.listener(|this, change: &SettingsChange, _window, cx| {
                 this.apply_setting(*change, cx);
             });
-            let close = cx.listener(|this, _event: &(), _window, cx| {
-                this.settings_open = false;
-                cx.notify();
+            let close = cx.listener(|this, _event: &(), window: &mut Window, cx| {
+                this.close_settings(window, cx)
             });
 
             SettingsDialog::new(Settings::current(cx), self.settings_focus.clone())
@@ -167,6 +191,20 @@ impl Render for AppView {
 
         // ── Layout ─────────────────────────────────────────────────
         div()
+            // Keeps the root on the focus path — see `focus` above — and lets
+            // a click on empty chrome hand focus back after a dialog closes.
+            .track_focus(&self.focus)
+            // Window commands. Handled here rather than globally so they act
+            // on the window the keystroke was aimed at.
+            .on_action(|_: &Minimize, window: &mut Window, _| window.minimize_window())
+            .on_action(|_: &Zoom, window: &mut Window, _| window.zoom_window())
+            .on_action(|_: &ToggleFullScreen, window: &mut Window, _| window.toggle_fullscreen())
+            .on_action(|_: &CloseWindow, window: &mut Window, _| window.remove_window())
+            // View commands.
+            .on_action(cx.listener(|this, _: &Refresh, _window, cx| this.rescan(cx)))
+            .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
+                this.open_settings(window, cx)
+            }))
             .size_full()
             .bg(theme.canvas)
             .text_color(theme.text)

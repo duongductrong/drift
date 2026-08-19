@@ -1,4 +1,5 @@
 mod core;
+mod keymap;
 mod settings;
 mod theme;
 mod ui;
@@ -12,6 +13,12 @@ fn main() {
     gpui_platform::application().run(|cx: &mut App| {
         // Publishes both the settings and the theme they select.
         settings::init(cx);
+        // Actions, their key bindings, and the macOS menu bar. Before the
+        // window opens, so the first frame already has them.
+        keymap::init(cx);
+        // Unbundled binaries start behind whatever launched them, which would
+        // leave the menu bar showing another app's.
+        cx.activate(true);
 
         let bounds = Bounds::centered(None, size(px(900.0), px(640.0)), cx);
         cx.open_window(
@@ -38,7 +45,7 @@ fn main() {
                 window_min_size: Some(size(px(640.0), px(400.0))),
                 ..Default::default()
             },
-            |_window, cx| cx.new(|cx| ui::app_view::AppView::new(cx)),
+            |window, cx| cx.new(|cx| ui::app_view::AppView::new(window, cx)),
         )
         .unwrap();
     });

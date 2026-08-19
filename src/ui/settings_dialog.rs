@@ -7,6 +7,7 @@ use gpui::{
 
 use crate::core::scanner;
 use crate::core::types::{Provider, TimeWindow};
+use crate::keymap::{Cancel, SETTINGS_DIALOG_CONTEXT};
 use crate::settings::{Settings, SettingsChange, MODEL_ROW_OPTIONS};
 use crate::theme::{Theme, ThemeMode};
 
@@ -267,10 +268,14 @@ impl RenderOnce for SettingsDialog {
             }));
 
         // ── Sheet ──────────────────────────────────────────────────
-        let on_escape = self.on_close.clone();
+        let on_cancel = self.on_close.clone();
         let sheet = div()
             .id("settings-sheet")
             .track_focus(&self.focus)
+            // Declaring the context is what scopes `escape` to the dialog:
+            // the binding only matches while this is on the focus path, so no
+            // key is intercepted once the sheet is gone.
+            .key_context(SETTINGS_DIALOG_CONTEXT)
             .occlude()
             .w(px(DIALOG_WIDTH))
             .max_h(viewport.height - px(VIEWPORT_MARGIN * 2.0))
@@ -281,11 +286,9 @@ impl RenderOnce for SettingsDialog {
             .border_1()
             .border_color(theme.border_strong)
             .shadow_lg()
-            .on_key_down(move |event, window, cx| {
-                if event.keystroke.key == "escape" {
-                    if let Some(handler) = &on_escape {
-                        handler(window, cx);
-                    }
+            .on_action(move |_: &Cancel, window, cx| {
+                if let Some(handler) = &on_cancel {
+                    handler(window, cx);
                 }
             })
             .child(header)
