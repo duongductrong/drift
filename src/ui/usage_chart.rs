@@ -247,7 +247,7 @@ impl RenderOnce for UsageChart {
                         // Draw stacked bars bottom-to-top
                         for (value, color) in segments {
                             let seg_h = total_h * (*value / total) as f32;
-                            y_offset = y_offset - seg_h;
+                            y_offset -= seg_h;
                             window.paint_quad(quad(
                                 Bounds::new(point(x, y_offset), size(bar_w, seg_h)),
                                 px(1.0),

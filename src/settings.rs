@@ -404,8 +404,10 @@ mod tests {
 
     #[test]
     fn enabled_providers_keeps_the_canonical_order() {
-        let mut settings = Settings::default();
-        settings.disabled_providers = vec![Provider::Codex];
+        let settings = Settings {
+            disabled_providers: vec![Provider::Codex],
+            ..Default::default()
+        };
         assert_eq!(
             settings.enabled_providers(),
             vec![

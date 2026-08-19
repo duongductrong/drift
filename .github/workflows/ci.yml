@@ -45,9 +45,10 @@ jobs:
         # since the tree was not rustfmt-clean when this landed.
         continue-on-error: true
 
+      # A hard gate: the tree is clippy-clean, so a new warning is a
+      # regression rather than a pre-existing debt to work around.
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
-        continue-on-error: true
+        run: cargo clippy --all-targets --locked -- -D warnings
 
       # `--locked` is the point of this step as much as the tests are: it fails
       # if Cargo.lock and Cargo.toml have drifted apart.

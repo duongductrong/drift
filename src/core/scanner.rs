@@ -73,18 +73,15 @@ pub fn discover_transcripts(root: &Path, since_ms: i64) -> Vec<PathBuf> {
                     dirs_to_visit.push(path);
                 } else if path.is_file()
                     && path.extension().is_some_and(|e| e == "jsonl")
+                    && let Ok(metadata) = entry.metadata()
+                    && let Ok(mtime) = metadata.modified()
                 {
-                    if let Ok(metadata) = entry.metadata() {
-                        if let Ok(mtime) = metadata.modified() {
-                            let mtime_ms = mtime
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_millis()
-                                as i64;
-                            if mtime_ms >= cutoff {
-                                files.push(path);
-                            }
-                        }
+                    let mtime_ms = mtime
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as i64;
+                    if mtime_ms >= cutoff {
+                        files.push(path);
                     }
                 }
             }
@@ -110,10 +107,10 @@ fn int(value: Option<&Value>) -> u64 {
 /// Parse an RFC 3339 timestamp string to epoch milliseconds.
 fn parse_timestamp_ms(value: Option<&Value>) -> Option<i64> {
     // Try string (RFC 3339) first — Claude uses "2026-08-08T15:18:37.487Z"
-    if let Some(text) = value.and_then(Value::as_str) {
-        if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(text) {
-            return Some(dt.timestamp_millis());
-        }
+    if let Some(text) = value.and_then(Value::as_str)
+        && let Ok(dt) = chrono::DateTime::parse_from_rfc3339(text)
+    {
+        return Some(dt.timestamp_millis());
     }
     // Fall back to integer milliseconds for backward compatibility
     value.and_then(Value::as_i64)
@@ -426,10 +423,10 @@ fn read_transcript_records(path: &Path, provider: Provider) -> Option<Vec<UsageE
                 if let Some(record) = parse_claude_line(&line) {
                     // Every assistant content block repeats the parent
                     // message's usage; the first record wins.
-                    if let Some(key) = &record.dedup_id {
-                        if !seen_in_file.insert(key.clone()) {
-                            continue;
-                        }
+                    if let Some(key) = &record.dedup_id
+                        && !seen_in_file.insert(key.clone())
+                    {
+                        continue;
                     }
                     records.push(record);
                 }
@@ -457,10 +454,10 @@ fn read_transcript_records(path: &Path, provider: Provider) -> Option<Vec<UsageE
                     continue;
                 }
                 if let Some(record) = parse_kimi_line(&line, &mut kimi_state) {
-                    if let Some(key) = &record.dedup_id {
-                        if !seen_in_file.insert(key.clone()) {
-                            continue;
-                        }
+                    if let Some(key) = &record.dedup_id
+                        && !seen_in_file.insert(key.clone())
+                    {
+                        continue;
                     }
                     records.push(record);
                 }
@@ -696,15 +693,15 @@ fn scan_antigravity(since_ms: i64) -> Vec<UsageEvent> {
         }
 
         // Filter by mtime
-        if let Ok(metadata) = entry.metadata() {
-            if let Ok(mtime) = metadata.modified() {
-                let mtime_ms = mtime
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() as i64;
-                if mtime_ms < cutoff {
-                    continue;
-                }
+        if let Ok(metadata) = entry.metadata()
+            && let Ok(mtime) = metadata.modified()
+        {
+            let mtime_ms = mtime
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as i64;
+            if mtime_ms < cutoff {
+                continue;
             }
         }
 
@@ -756,15 +753,14 @@ fn read_antigravity_db(path: &Path, session_key: &str) -> Option<Vec<UsageEvent>
     // Each executor_metadata row covers all gen_metadata rows from its idx up to the
     // next executor_metadata idx. We use bisect to find the matching model.
     let mut model_entries: Vec<(i64, String)> = Vec::new();
-    if let Ok(mut em_stmt) = conn.prepare("SELECT idx, data FROM executor_metadata ORDER BY idx") {
-        if let Ok(em_rows) = em_stmt.query_map([], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
-        }) {
-            for em_row in em_rows.flatten() {
-                let (em_idx, em_data) = em_row;
-                if let Some(model) = extract_agy_model_name(&em_data) {
-                    model_entries.push((em_idx, model));
-                }
+    if let Ok(mut em_stmt) = conn.prepare("SELECT idx, data FROM executor_metadata ORDER BY idx")
+        && let Ok(em_rows) =
+            em_stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?)))
+    {
+        for em_row in em_rows.flatten() {
+            let (em_idx, em_data) = em_row;
+            if let Some(model) = extract_agy_model_name(&em_data) {
+                model_entries.push((em_idx, model));
             }
         }
     }
@@ -814,7 +810,7 @@ fn read_antigravity_db(path: &Path, session_key: &str) -> Option<Vec<UsageEvent>
             .get(&4)
             .and_then(|v| v.first())
             .and_then(|v| v.as_bytes())
-            .map(|b| decode_pb_fields(b))
+            .map(decode_pb_fields)
         else {
             continue;
         };
@@ -968,10 +964,10 @@ pub fn scan_all(
         if event.timestamp_ms < start_ts_ms || event.timestamp_ms > end_ts_ms {
             continue;
         }
-        if let Some(id) = &event.dedup_id {
-            if !seen_ids.insert(id.clone()) {
-                continue;
-            }
+        if let Some(id) = &event.dedup_id
+            && !seen_ids.insert(id.clone())
+        {
+            continue;
         }
         unique_events.push(event);
     }

@@ -160,7 +160,7 @@ impl AppView {
                     scanner::scan_all(window, &pricing, &providers)
                 })
                 .await;
-            let _ = dashboard.update(cx, |d, cx| {
+            dashboard.update(cx, |d, cx| {
                 d.snapshot = Some(snapshot);
                 d.loading = false;
                 cx.notify();
