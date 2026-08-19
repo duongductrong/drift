@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="320" viewBox="0 0 1200 320" role="img" aria-label="Mana — local usage dashboard for AI coding agents">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#16181D"/>
+      <stop offset="100%" stop-color="#0D0F12"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1200" height="320" rx="16" fill="url(#bg)"/>
+  <rect x="0.5" y="0.5" width="1199" height="319" rx="16" fill="none" stroke="#2A2E36"/>
+
+  <g font-family="Inter, SF Pro Display, Helvetica Neue, Arial, sans-serif">
+    <text x="72" y="132" fill="#F2F4F7" font-size="64" font-weight="600" letter-spacing="-1.5">Mana</text>
+    <text x="72" y="176" fill="#9BA3AF" font-size="20">Local usage dashboard for AI coding agents</text>
+    <text x="72" y="212" fill="#6B7280" font-size="14">Reads transcripts on your machine · no account, no network calls</text>
+
+    <g font-size="13" fill="#C3C9D2">
+      <g>
+        <rect x="72" y="240" width="86" height="28" rx="14" fill="#D97757" fill-opacity="0.14" stroke="#D97757" stroke-opacity="0.45"/>
+        <text x="115" y="259" text-anchor="middle" fill="#E7A28C">Claude</text>
+      </g>
+      <g>
+        <rect x="168" y="240" width="80" height="28" rx="14" fill="#62C987" fill-opacity="0.14" stroke="#62C987" stroke-opacity="0.45"/>
+        <text x="208" y="259" text-anchor="middle" fill="#8FDAAB">Codex</text>
+      </g>
+      <g>
+        <rect x="258" y="240" width="70" height="28" rx="14" fill="#8B5CF6" fill-opacity="0.14" stroke="#8B5CF6" stroke-opacity="0.45"/>
+        <text x="293" y="259" text-anchor="middle" fill="#B49BF8">Kimi</text>
+      </g>
+      <g>
+        <rect x="338" y="240" width="106" height="28" rx="14" fill="#06B6D4" fill-opacity="0.14" stroke="#06B6D4" stroke-opacity="0.45"/>
+        <text x="391" y="259" text-anchor="middle" fill="#63D2E6">OpenCode</text>
+      </g>
+      <g>
+        <rect x="454" y="240" width="118" height="28" rx="14" fill="#4285F4" fill-opacity="0.14" stroke="#4285F4" stroke-opacity="0.45"/>
+        <text x="513" y="259" text-anchor="middle" fill="#8AB4F8">Antigravity</text>
+      </g>
+    </g>
+  </g>
+
+  <g transform="translate(700 56)">
+    <line x1="0" y1="208" x2="440" y2="208" stroke="#2A2E36" stroke-width="1"/>
+    <g>
+      <rect x="8"   y="150" width="26" height="58"  rx="3" fill="#D97757" fill-opacity="0.85"/>
+      <rect x="8"   y="128" width="26" height="22"  rx="3" fill="#62C987" fill-opacity="0.85"/>
+      <rect x="46"  y="168" width="26" height="40"  rx="3" fill="#D97757" fill-opacity="0.85"/>
+      <rect x="46"  y="152" width="26" height="16"  rx="3" fill="#4285F4" fill-opacity="0.85"/>
+      <rect x="84"  y="112" width="26" height="96"  rx="3" fill="#D97757" fill-opacity="0.85"/>
+      <rect x="84"  y="86"  width="26" height="26"  rx="3" fill="#8B5CF6" fill-opacity="0.85"/>
+      <rect x="122" y="140" width="26" height="68"  rx="3" fill="#D97757" fill-opacity="0.85"/>
+      <rect x="122" y="118" width="26" height="22"  rx="3" fill="#06B6D4" fill-opacity="0.85"/>
+      <rect x="160" y="176" width="26" height="32"  rx="3" fill="#62C987" fill-opacity="0.85"/>
+      <rect x="198" y="96"  width="26" height="112" rx="3" fill="#D97757" fill-opacity="0.85"/>
+      <rect x="198" y="72"  width="26" height="24"  rx="3" fill="#4285F4" fill-opacity="0.85"/>
+      <rect x="236" y="134" width="26" height="74"  rx="3" fill="#D97757" fill-opacity="0.85"/>
+      <rect x="236" y="116" width="26" height="18"  rx="3" fill="#62C987" fill-opacity="0.85"/>
+      <rect x="274" y="158" width="26" height="50"  rx="3" fill="#8B5CF6" fill-opacity="0.85"/>
+      <rect x="312" y="104" width="26" height="104" rx="3" fill="#D97757" fill-opacity="0.85"/>
+      <rect x="312" y="82"  width="26" height="22"  rx="3" fill="#06B6D4" fill-opacity="0.85"/>
+      <rect x="350" y="146" width="26" height="62"  rx="3" fill="#D97757" fill-opacity="0.85"/>
+      <rect x="388" y="122" width="26" height="86"  rx="3" fill="#4285F4" fill-opacity="0.85"/>
+      <rect x="388" y="102" width="26" height="20"  rx="3" fill="#62C987" fill-opacity="0.85"/>
+    </g>
+  </g>
+</svg>

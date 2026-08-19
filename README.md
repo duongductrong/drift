@@ -1,0 +1,151 @@
+<p align="center">
+  <img src="assets/banner.svg" alt="Mana — local usage dashboard for AI coding agents" width="100%">
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT">
+  <img src="https://img.shields.io/badge/rust-2024%20edition-orange.svg" alt="Rust 2024 edition">
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg" alt="Platform: macOS | Linux">
+</p>
+
+# Mana
+
+Mana is a native desktop dashboard for the token usage and estimated cost of your AI
+coding agents. It reads the transcripts and local databases those tools already write
+to your machine, aggregates them, and renders the result as a chart with per-provider
+and per-model breakdowns.
+
+Everything happens locally: no account, no API keys, no network calls. Files are opened
+read-only.
+
+## Features
+
+- **Five providers in one view** — Claude Code, Codex, Kimi Code, OpenCode, and Antigravity,
+  each with its own color in a stacked bar chart.
+- **Cost or tokens** — one switch re-ranks the whole page. A cheap model can dominate the
+  token ranking while barely showing in the cost one; both numbers stay on screen.
+- **Time ranges** — last 7 / 30 / 90 days, this month, last month. Daily or monthly bars,
+  with monthly offered only when the range actually spans more than one calendar month.
+- **Headline stats** — total cost, total tokens, event count, session count.
+- **Token breakdown** — processed tokens with a per-active-day average, cached input,
+  fresh input, cache writes, output including reasoning, and estimated cache savings.
+- **Breakdowns** — provider share bars and a configurable top-N model list, both ranked by
+  the selected metric.
+- **Chart tooltips** — hover a bar for its per-provider split.
+- **Deduplication** — Claude repeats a message's usage on every content block and Codex
+  re-emits identical token counts at stream boundaries; both are collapsed so totals are
+  not inflated.
+- **Settings** — theme (system / light / dark), default range, scan-on-launch, model row
+  count, and a per-provider on/off switch that narrows what gets scanned.
+- **Native chrome** — custom toolbar, macOS menu bar, and keyboard shortcuts.
+
+## Data sources
+
+Mana never asks where your data is; each provider is read from its standard location.
+
+| Provider | Location | Format |
+| --- | --- | --- |
+| Claude Code | `~/.claude/projects` | `.jsonl` transcripts |
+| Codex | `~/.codex/sessions` | `.jsonl` rollouts |
+| Kimi Code | `~/.kimi-code/sessions` | `wire.jsonl` session logs |
+| OpenCode | `~/.local/share/opencode/opencode.db` | SQLite |
+| Antigravity | `~/.gemini/antigravity/conversations` | SQLite + protobuf blobs |
+
+Missing directories are skipped, so only the agents you actually use show up.
+
+## How cost is computed
+
+When a provider records what it charged — Claude's `costUSD`, OpenCode's `cost` — Mana
+uses that number. Otherwise it prices the event from a built-in table covering Anthropic,
+OpenAI, Kimi, Gemini, and the models OpenCode hosts, with separate rates for fresh input,
+cached input, cache writes, and output. Lookups fall back to a prefix match, so dated model
+variants resolve to their family rate. A model with no known rate contributes tokens but
+no cost.
+
+Cost figures are estimates for your own tracking, not a bill.
+
+## Tech stack
+
+- **Rust** (2024 edition)
+- **[GPUI](https://github.com/zed-industries/zed)** — the GPU-accelerated UI framework
+  behind Zed; every element, chart, and dialog here is drawn with it
+- **rusqlite** (bundled SQLite) for the OpenCode and Antigravity stores
+- **serde / serde_json** for transcript and settings parsing
+- **chrono** for date bucketing, **dirs** for platform paths
+
+The Antigravity reader includes a small hand-written protobuf wire-format decoder — no
+schema or codegen dependency.
+
+## Requirements
+
+- Rust 1.97 or newer — GPUI's upstream pins that toolchain; built and tested with 1.97.1
+- macOS: Xcode Command Line Tools
+- Linux: a Wayland or X11 session plus the usual GPUI build dependencies
+
+GPUI is pulled straight from the Zed repository, so the first build clones a large tree
+and takes a while. Later builds are incremental.
+
+## Install
+
+```bash
+git clone https://github.com/duongductrong/mana.git
+cd mana
+cargo run --release
+```
+
+To install the binary onto your `PATH`:
+
+```bash
+cargo install --path .
+```
+
+## Usage
+
+Mana scans on launch by default and shows a skeleton while it works. Pick a range from the
+pill in the filter bar, switch between cost and tokens on the chart, and hover a bar for its
+breakdown. Turning a provider off in Settings removes it from the next scan entirely.
+
+| Shortcut | Action |
+| --- | --- |
+| `⌘R` / `Ctrl+R` | Rescan transcripts |
+| `⌘,` / `Ctrl+,` | Open settings |
+| `⌘W` / `Ctrl+W` | Close window |
+| `⌘M` / `Ctrl+M` | Minimize |
+| `⌃⌘F` (macOS) / `F11` | Toggle full screen |
+| `Esc` | Dismiss the settings dialog |
+| `⌘Q` / `Ctrl+Q` | Quit |
+
+Settings are stored as JSON at `~/Library/Application Support/mana/settings.json` on macOS
+and `~/.config/mana/settings.json` on Linux. The file is optional and hand-editable;
+unknown or corrupt values fall back to the defaults.
+
+## Development
+
+```bash
+cargo test     # unit tests for bucketing, pricing, formatting, settings, scroll math
+cargo check
+cargo run      # debug build
+```
+
+Layout:
+
+```
+src/
+  core/       scanning, parsing, pricing, aggregation — no UI types
+    scanner.rs    per-provider parsers, dedup, snapshot building
+    pricing.rs    built-in rate table and cost math
+    types.rs      snapshots, buckets, time windows, metrics
+  ui/         GPUI views and components
+    app_view.rs   root view, scan orchestration, dialog focus
+    dashboard.rs  the page: filters, stats, chart, breakdowns
+  settings.rs persisted preferences, published as a GPUI global
+  theme.rs    light/dark palettes and provider colors
+  keymap.rs   actions, key bindings, macOS menu bar
+```
+
+`core` takes its inputs as plain arguments and knows nothing about settings or rendering,
+which is what keeps a new preference to one edit in `settings.rs` and one at the call site.
+
+## License
+
+[MIT](LICENSE)
