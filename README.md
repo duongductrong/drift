@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/banner.svg" alt="Mana — local usage dashboard for AI coding agents" width="100%">
+  <img src="assets/banner.svg" alt="Drift — local usage dashboard for AI coding agents" width="100%">
 </p>
 
 <p align="center">
@@ -8,9 +8,9 @@
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg" alt="Platform: macOS | Linux">
 </p>
 
-# Mana
+# Drift
 
-Mana is a native desktop dashboard for the token usage and estimated cost of your AI
+Drift is a native desktop dashboard for the token usage and estimated cost of your AI
 coding agents. It reads the transcripts and local databases those tools already write
 to your machine, aggregates them, and renders the result as a chart with per-provider
 and per-model breakdowns.
@@ -41,7 +41,7 @@ read-only.
 
 ## Data sources
 
-Mana never asks where your data is; each provider is read from its standard location.
+Drift never asks where your data is; each provider is read from its standard location.
 
 | Provider | Location | Format |
 | --- | --- | --- |
@@ -55,7 +55,7 @@ Missing directories are skipped, so only the agents you actually use show up.
 
 ## How cost is computed
 
-When a provider records what it charged — Claude's `costUSD`, OpenCode's `cost` — Mana
+When a provider records what it charged — Claude's `costUSD`, OpenCode's `cost` — Drift
 uses that number. Otherwise it prices the event from a built-in table covering Anthropic,
 OpenAI, Kimi, Gemini, and the models OpenCode hosts, with separate rates for fresh input,
 cached input, cache writes, and output. Lookups fall back to a prefix match, so dated model
@@ -88,8 +88,8 @@ and takes a while. Later builds are incremental.
 ## Install
 
 ```bash
-git clone https://github.com/duongductrong/mana.git
-cd mana
+git clone https://github.com/duongductrong/drift.git
+cd drift
 cargo run --release
 ```
 
@@ -101,7 +101,7 @@ cargo install --path .
 
 ## Usage
 
-Mana scans on launch by default and shows a skeleton while it works. Pick a range from the
+Drift scans on launch by default and shows a skeleton while it works. Pick a range from the
 pill in the filter bar, switch between cost and tokens on the chart, and hover a bar for its
 breakdown. Turning a provider off in Settings removes it from the next scan entirely.
 
@@ -115,8 +115,8 @@ breakdown. Turning a provider off in Settings removes it from the next scan enti
 | `Esc` | Dismiss the settings dialog |
 | `⌘Q` / `Ctrl+Q` | Quit |
 
-Settings are stored as JSON at `~/Library/Application Support/mana/settings.json` on macOS
-and `~/.config/mana/settings.json` on Linux. The file is optional and hand-editable;
+Settings are stored as JSON at `~/Library/Application Support/drift/settings.json` on macOS
+and `~/.config/drift/settings.json` on Linux. The file is optional and hand-editable;
 unknown or corrupt values fall back to the defaults.
 
 ## Development

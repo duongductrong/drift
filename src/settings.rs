@@ -269,9 +269,9 @@ fn provider_from_key(key: &str) -> Option<Provider> {
     Provider::ALL.into_iter().find(|p| provider_key(*p) == key)
 }
 
-/// Where the settings file lives: `<config dir>/mana/settings.json`.
+/// Where the settings file lives: `<config dir>/drift/settings.json`.
 pub fn config_path() -> Option<PathBuf> {
-    Some(dirs::config_dir()?.join("mana").join("settings.json"))
+    Some(dirs::config_dir()?.join("drift").join("settings.json"))
 }
 
 fn load() -> Settings {

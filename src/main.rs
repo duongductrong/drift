@@ -27,7 +27,7 @@ fn main() {
                 titlebar: Some(TitlebarOptions {
                     // Kept for the Window menu and Mission Control; the visible
                     // title is drawn by our own toolbar.
-                    title: Some("Mana".into()),
+                    title: Some("Drift".into()),
                     appears_transparent: cfg!(target_os = "macos"),
                     traffic_light_position: cfg!(target_os = "macos")
                         .then(ui::title_bar::traffic_light_position),
