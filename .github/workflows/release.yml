@@ -208,7 +208,7 @@ jobs:
           APPLE_API_KEY_PATH: ${{ steps.notary.outputs.key_path }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          BUNDLE_ID: ${{ vars.BUNDLE_ID || 'com.duongductrong.drift' }}
+          BUNDLE_ID: ${{ vars.BUNDLE_ID || 'com.trongduong.drift' }}
           # Stamped in so a fork's builds check the fork's releases.
           DRIFT_UPDATE_REPO: ${{ github.repository }}
         run: |

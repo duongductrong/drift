@@ -86,7 +86,7 @@ open. Configure them on the `release` environment (or as repository secrets).
 | `APPLE_API_KEY_ID` | That key's ID. |
 | `APPLE_API_ISSUER` | The issuer UUID it belongs to. |
 
-Optional variable: `BUNDLE_ID` (defaults to `com.duongductrong.drift`).
+Optional variable: `BUNDLE_ID` (defaults to `com.trongduong.drift`).
 
 ```bash
 # Producing the two base64 blobs

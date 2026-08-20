@@ -18,7 +18,7 @@
     <key>CFBundleIdentifier</key>
     <string>@BUNDLE_ID@</string>
     <key>CFBundleExecutable</key>
-    <string>drift</string>
+    <string>Drift</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleInfoDictionaryVersion</key>

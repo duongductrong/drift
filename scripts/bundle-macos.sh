@@ -24,7 +24,7 @@
 #   APPLE_API_ISSUER
 #   — or the Apple ID route:
 #   APPLE_ID, APPLE_APP_PASSWORD, APPLE_TEAM_ID
-#   BUNDLE_ID               Defaults to com.duongductrong.drift.
+#   BUNDLE_ID               Defaults to com.trongduong.drift.
 
 set -euo pipefail
 
@@ -36,8 +36,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 APP_NAME="Drift"
-BINARY_NAME="drift"
-BUNDLE_ID="${BUNDLE_ID:-com.duongductrong.drift}"
+BINARY_NAME="Drift"
+BUNDLE_ID="${BUNDLE_ID:-com.trongduong.drift}"
 
 VERSION=""
 CHANNEL="stable"
