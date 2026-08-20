@@ -1,4 +1,4 @@
-use gpui::{div, prelude::*, px, Context, Entity, FocusHandle, SharedString, Window};
+use gpui::{div, prelude::*, px, Context, Entity, FocusHandle, SharedString, Task, Window};
 use crate::theme::Theme;
 use crate::core::scanner;
 use crate::core::pricing::PricingTable;
@@ -20,6 +20,16 @@ use super::title_bar::Toolbar;
 /// the user is waiting on.
 const UPDATE_CHECK_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// The shortest the automatic scanner ever sleeps before looking at the clock
+/// again.
+///
+/// The loop waits out the time left since the *last* scan rather than a fixed
+/// tick, so anything that scans in the meantime — the refresh button, a range
+/// change — pushes the next automatic scan back. That also means the remaining
+/// time can be zero, which without a floor here would spin the loop while a
+/// slow scan is still in flight.
+const AUTO_SCAN_MIN_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
 pub struct AppView {
     dashboard: Entity<Dashboard>,
     settings_open: bool,
@@ -31,6 +41,14 @@ pub struct AppView {
     focus: FocusHandle,
     /// Focused while the settings dialog is open, so Escape closes it.
     settings_focus: FocusHandle,
+    /// The interval scanner, when the user has one switched on. Held only so
+    /// that dropping it cancels it: a GPUI `Task` stops when its handle goes,
+    /// which is what turning the setting off — or closing the window — does.
+    auto_scan: Option<Task<()>>,
+    /// When the last scan finished, whoever asked for it. The interval is
+    /// measured from here, so pressing refresh postpones the next automatic
+    /// scan instead of being followed straight after by a second one.
+    last_scan_at: std::time::Instant,
 }
 
 impl AppView {
@@ -74,13 +92,76 @@ impl AppView {
             .detach();
         }
 
-        Self {
+        let mut this = Self {
             dashboard: dash,
             settings_open: false,
             update_state: CheckState::Idle,
             focus,
             settings_focus: cx.focus_handle(),
-        }
+            auto_scan: None,
+            // Counted from launch, so the first automatic scan is a full
+            // interval away whether or not the launch scan ran.
+            last_scan_at: std::time::Instant::now(),
+        };
+        // Restored from the settings file like every other preference: a window
+        // left open keeps itself current without being asked.
+        this.restart_auto_scan(cx);
+        this
+    }
+
+    // ── Automatic scanning ─────────────────────────────────────────
+    //
+    // One task, restarted whenever the interval changes and dropped when it is
+    // switched off. Nothing here scans on its own: it decides *when*, and hands
+    // off to `start_scan`, which is the same path the refresh button takes and
+    // runs on the background executor.
+
+    /// Start the interval scanner the current setting asks for, replacing
+    /// whatever was running before.
+    fn restart_auto_scan(&mut self, cx: &mut Context<Self>) {
+        let Some(interval) = Settings::current(cx).scan_interval.duration() else {
+            // Dropping the old task is what stops it, so `Off` needs no flag
+            // for a running loop to notice.
+            self.auto_scan = None;
+            return;
+        };
+
+        self.auto_scan = Some(cx.spawn(async move |this, cx| {
+            loop {
+                // Sleep only what is left of the interval, then look again.
+                // Waking up is cheap, and re-reading the clock is what lets a
+                // scan from any other source count as this tick's.
+                let Ok(wait) = this.read_with(cx, |this, _| {
+                    this.time_until_due(interval).max(AUTO_SCAN_MIN_WAIT)
+                }) else {
+                    // The view is gone, and with it the reason to keep timing.
+                    return;
+                };
+                cx.background_executor().timer(wait).await;
+
+                let alive = this.update(cx, |this, cx| {
+                    // Still not due — something else scanned while we slept.
+                    if !this.time_until_due(interval).is_zero() {
+                        return;
+                    }
+                    // A scan already running is the one this tick wanted; a
+                    // second would read the same files for the same answer.
+                    if this.dashboard.read(cx).loading {
+                        return;
+                    }
+                    this.start_scan(cx);
+                });
+                if alive.is_err() {
+                    return;
+                }
+            }
+        }));
+    }
+
+    /// How long until the next automatic scan comes due: the interval, less
+    /// however much of it the last scan has already used up.
+    fn time_until_due(&self, interval: std::time::Duration) -> std::time::Duration {
+        interval.saturating_sub(self.last_scan_at.elapsed())
     }
 
     /// Ask GitHub whether a newer build exists, on the channel the user is
@@ -152,7 +233,7 @@ impl AppView {
         // Which providers are counted is settings, not scanning: resolve it here
         // and hand the scanner a plain list.
         let providers = Settings::current(cx).enabled_providers();
-        cx.spawn(async move |_this, cx| {
+        cx.spawn(async move |this, cx| {
             let snapshot = cx
                 .background_executor()
                 .spawn(async move {
@@ -165,6 +246,12 @@ impl AppView {
                 d.loading = false;
                 cx.notify();
             });
+            // Time the next automatic scan from here rather than from the
+            // start, so the interval is the gap between scans and a slow one
+            // is never followed immediately by another.
+            let _ = this.update(cx, |this, _cx| {
+                this.last_scan_at = std::time::Instant::now();
+            });
         })
         .detach();
     }
@@ -176,8 +263,15 @@ impl AppView {
     /// Apply one edit from the settings dialog, rescanning when the edit
     /// changes which events are counted.
     fn apply_setting(&mut self, change: SettingsChange, cx: &mut Context<Self>) {
+        let previous_interval = Settings::current(cx).scan_interval;
         if settings::update(cx, change) {
             self.start_scan(cx);
+        }
+        // Compared rather than matched on the variant, so "Restore defaults"
+        // reschedules too — and so an unrelated edit does not restart the
+        // timer, which would reset a countdown the user cannot see.
+        if Settings::current(cx).scan_interval != previous_interval {
+            self.restart_auto_scan(cx);
         }
         // Switching channels asks a different question, so the answer on
         // screen is stale the moment it changes.

@@ -9,7 +9,7 @@ use crate::core::scanner;
 use crate::core::types::{Provider, TimeWindow};
 use crate::core::update::{self, Channel, CheckState};
 use crate::keymap::{Cancel, SETTINGS_DIALOG_CONTEXT};
-use crate::settings::{Settings, SettingsChange, MODEL_ROW_OPTIONS};
+use crate::settings::{ScanInterval, Settings, SettingsChange, MODEL_ROW_OPTIONS};
 use crate::theme::{Theme, ThemeMode};
 
 use super::components::{Button, IconButton, SectionHeader};
@@ -242,6 +242,32 @@ impl RenderOnce for SettingsDialog {
             ],
         );
 
+        // ── Scanning ───────────────────────────────────────────────
+        //
+        // Reads on from "Scan on launch" above: between them they say when
+        // Drift reads the transcripts on its own. The refresh button is
+        // unaffected by either and works even on "Off".
+        let interval_options = ScanInterval::ALL
+            .into_iter()
+            .map(|interval| {
+                Segment::new(
+                    interval.label(),
+                    interval == settings.scan_interval,
+                    emit(SettingsChange::ScanInterval(interval)),
+                )
+            })
+            .collect();
+
+        let scanning = section(
+            "Scanning",
+            vec![stacked_row(
+                "Automatic scan",
+                "How often to rescan while the app is open.",
+                segmented("settings-scan-interval", interval_options, cx).into_any_element(),
+                cx,
+            )],
+        );
+
         // ── Dashboard ──────────────────────────────────────────────
         let row_options = MODEL_ROW_OPTIONS
             .into_iter()
@@ -323,6 +349,7 @@ impl RenderOnce for SettingsDialog {
             .child(appearance)
             .child(data_sources)
             .child(launch)
+            .child(scanning)
             .child(dashboard)
             .child(updates);
 

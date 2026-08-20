@@ -36,8 +36,9 @@ update check — a public GitHub Releases lookup you can turn off in Settings.
 - **Deduplication** — Claude repeats a message's usage on every content block and Codex
   re-emits identical token counts at stream boundaries; both are collapsed so totals are
   not inflated.
-- **Settings** — theme (system / light / dark), default range, scan-on-launch, model row
-  count, and a per-provider on/off switch that narrows what gets scanned.
+- **Settings** — theme (system / light / dark), default range, scan-on-launch, automatic
+  rescan interval, model row count, and a per-provider on/off switch that narrows what gets
+  scanned.
 - **Update checks** — Drift asks GitHub whether a newer release exists, on the Stable or
   Beta channel. Stable never offers a pre-release; Beta offers whichever build is newest.
   Off in one click, and it downloads nothing by itself.
@@ -122,6 +123,12 @@ Releasing is documented in [docs/RELEASING.md](docs/RELEASING.md).
 Drift scans on launch by default and shows a skeleton while it works. Pick a range from the
 pill in the filter bar, switch between cost and tokens on the chart, and hover a bar for its
 breakdown. Turning a provider off in Settings removes it from the next scan entirely.
+
+An open window also rescans on its own every 15 minutes; Settings → Scanning offers 5, 15 or
+30 minutes, an hour, or Off. Automatic scans leave the dashboard on screen rather than
+showing the skeleton, and the interval is counted from the last scan, so pressing `⌘R`
+postpones the next one instead of being followed by a second. The refresh button works on
+every setting, `Off` included.
 
 | Shortcut | Action |
 | --- | --- |

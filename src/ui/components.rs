@@ -1,6 +1,10 @@
 use std::sync::Arc;
+use std::time::Duration;
 
-use gpui::{div, prelude::*, px, App, Hsla, SharedString, Window};
+use gpui::{
+    div, percentage, prelude::*, px, Animation, AnimationExt, App, Hsla, SharedString,
+    Transformation, Window,
+};
 use crate::core::types::UsageMetric;
 use crate::theme::Theme;
 use super::icons::{Icon, ICON_SIZE};
@@ -93,8 +97,9 @@ impl RenderOnce for Button {
 //
 // Sized to the same 26pt height as the dashboard's filter pill so the chrome
 // lines up, and labelled by a tooltip since the glyph carries no text. `busy`
-// stands in for an action already running: the icon dims and clicks stop, so a
-// scan cannot be started twice.
+// stands in for an action already running: the icon spins and clicks stop, so a
+// scan cannot be started twice. Spinning rather than only dimming is what tells
+// the user the app is working — a still, dim glyph reads as merely unavailable.
 //
 // Usage:
 //   IconButton::new("scan", Icon::Refresh)
@@ -104,6 +109,11 @@ impl RenderOnce for Button {
 
 /// Side length of an icon button — matches the filter pill's height.
 pub const ICON_BUTTON_SIZE: f32 = 26.0;
+
+/// How long one revolution of a `busy` icon takes. Slow enough to read as
+/// deliberate progress rather than a stutter at the frame rates a mask-painted
+/// glyph this small can hold.
+const SPINNER_PERIOD: Duration = Duration::from_millis(900);
 
 #[derive(IntoElement)]
 pub struct IconButton {
@@ -138,7 +148,7 @@ impl IconButton {
         self
     }
 
-    /// The action is already running: dimmed and inert.
+    /// The action is already running: spinning and inert.
     pub fn busy(mut self, busy: bool) -> Self {
         self.busy = busy;
         self
@@ -162,9 +172,8 @@ impl RenderOnce for IconButton {
         // hover style on the button. A group hover keyed to this button's id
         // lets the icon brighten with the button it sits in.
         let group = SharedString::from(format!("{}-icon", self.id));
-        let resting = if self.busy {
-            theme.text_ghost
-        } else if self.selected {
+        let spinner_id = SharedString::from(format!("{}-spinner", self.id));
+        let resting = if self.selected {
             theme.text
         } else {
             theme.text_secondary
@@ -182,13 +191,26 @@ impl RenderOnce for IconButton {
             .cursor_default()
             .when(self.selected, |el| el.bg(theme.overlay_strong))
             .when(!self.busy, |el| el.hover(|style| style.bg(theme.overlay)))
-            .child(
-                self.icon
-                    .element(px(ICON_SIZE), resting)
-                    .when(!self.busy, |icon| {
-                        icon.group_hover(group, |style| style.text_color(theme.text))
-                    }),
-            )
+            .child({
+                let icon = self.icon.element(px(ICON_SIZE), resting);
+                if self.busy {
+                    // One full turn per cycle, phase-locked to the app clock so
+                    // several spinners started at different moments still line
+                    // up. `repeat_synced` also means the rotation carries on
+                    // across re-renders, which every scan triggers.
+                    icon.with_animation(
+                        spinner_id,
+                        Animation::new(SPINNER_PERIOD).repeat_synced(),
+                        |icon, delta| {
+                            icon.with_transformation(Transformation::rotate(percentage(delta)))
+                        },
+                    )
+                    .into_any_element()
+                } else {
+                    icon.group_hover(group, |style| style.text_color(theme.text))
+                        .into_any_element()
+                }
+            })
             .when_some(self.tooltip, |el, label| el.tooltip(Tooltip::text(label)))
             .when(!self.busy, |el| {
                 el.on_click(move |_event, window, cx| {

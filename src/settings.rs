@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
 use gpui::{App, Global};
 use serde::{Deserialize, Serialize};
@@ -28,6 +29,74 @@ pub const MODEL_ROW_OPTIONS: [usize; 4] = [5, 10, 15, 25];
 /// file cannot make the dashboard render thousands of rows.
 const MODEL_ROWS_MAX: usize = 100;
 
+// ---------------------------------------------------------------------------
+// Automatic scanning
+// ---------------------------------------------------------------------------
+
+/// How often the app rescans on its own while its window is open.
+///
+/// A scan re-reads every transcript that could fall in the selected range, so
+/// the options are deliberately coarse minutes rather than seconds: this keeps
+/// the numbers roughly current, it is not a live feed. `Off` leaves scanning
+/// entirely to the refresh button, which works on every setting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScanInterval {
+    Off,
+    FiveMinutes,
+    FifteenMinutes,
+    ThirtyMinutes,
+    Hourly,
+}
+
+impl ScanInterval {
+    pub const ALL: [ScanInterval; 5] = [
+        ScanInterval::Off,
+        ScanInterval::FiveMinutes,
+        ScanInterval::FifteenMinutes,
+        ScanInterval::ThirtyMinutes,
+        ScanInterval::Hourly,
+    ];
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            ScanInterval::Off => "Off",
+            ScanInterval::FiveMinutes => "5 min",
+            ScanInterval::FifteenMinutes => "15 min",
+            ScanInterval::ThirtyMinutes => "30 min",
+            ScanInterval::Hourly => "1 hour",
+        }
+    }
+
+    /// The stable name written to the settings file.
+    pub fn key(&self) -> &'static str {
+        match self {
+            ScanInterval::Off => "off",
+            ScanInterval::FiveMinutes => "5m",
+            ScanInterval::FifteenMinutes => "15m",
+            ScanInterval::ThirtyMinutes => "30m",
+            ScanInterval::Hourly => "1h",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<ScanInterval> {
+        ScanInterval::ALL.into_iter().find(|i| i.key() == key)
+    }
+
+    /// How long to wait between scans, or `None` when automatic scanning is
+    /// off. The one place that distinction is decided, so a caller spawns a
+    /// timer or doesn't rather than matching on the variants itself.
+    pub fn duration(&self) -> Option<Duration> {
+        let minutes = match self {
+            ScanInterval::Off => return None,
+            ScanInterval::FiveMinutes => 5,
+            ScanInterval::FifteenMinutes => 15,
+            ScanInterval::ThirtyMinutes => 30,
+            ScanInterval::Hourly => 60,
+        };
+        Some(Duration::from_secs(minutes * 60))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
     pub theme: ThemeMode,
@@ -35,6 +104,9 @@ pub struct Settings {
     pub default_range: TimeWindow,
     /// Whether opening the app immediately scans, or waits to be asked.
     pub scan_on_launch: bool,
+    /// How often an open window rescans without being asked — see
+    /// [`ScanInterval`].
+    pub scan_interval: ScanInterval,
     /// How many rows the "By Model" breakdown lists.
     pub model_rows: usize,
     /// Providers the user switched off, stored as the *disabled* set so a
@@ -57,6 +129,11 @@ impl Default for Settings {
             theme: ThemeMode::System,
             default_range: TimeWindow::Last30Days,
             scan_on_launch: true,
+            // Frequent enough that a window left open is never far out of
+            // date, rare enough that it costs nothing anyone would notice —
+            // and it matches the app's existing posture, where `scan_on_launch`
+            // already reads the transcripts without being asked.
+            scan_interval: ScanInterval::FifteenMinutes,
             model_rows: 15,
             disabled_providers: Vec::new(),
             check_for_updates: true,
@@ -105,6 +182,7 @@ pub enum SettingsChange {
     Theme(ThemeMode),
     DefaultRange(TimeWindow),
     ScanOnLaunch(bool),
+    ScanInterval(ScanInterval),
     ModelRows(usize),
     ToggleProvider(Provider),
     CheckForUpdates(bool),
@@ -118,6 +196,7 @@ impl SettingsChange {
             SettingsChange::Theme(mode) => settings.theme = mode,
             SettingsChange::DefaultRange(range) => settings.default_range = range,
             SettingsChange::ScanOnLaunch(enabled) => settings.scan_on_launch = enabled,
+            SettingsChange::ScanInterval(interval) => settings.scan_interval = interval,
             SettingsChange::ModelRows(rows) => settings.model_rows = clamp_model_rows(rows),
             SettingsChange::ToggleProvider(provider) => {
                 if let Some(at) = settings
@@ -145,6 +224,7 @@ impl SettingsChange {
             SettingsChange::Theme(_)
             | SettingsChange::DefaultRange(_)
             | SettingsChange::ScanOnLaunch(_)
+            | SettingsChange::ScanInterval(_)
             | SettingsChange::ModelRows(_)
             | SettingsChange::CheckForUpdates(_)
             | SettingsChange::UpdateChannel(_) => false,
@@ -207,6 +287,8 @@ struct StoredSettings {
     #[serde(default)]
     scan_on_launch: Option<bool>,
     #[serde(default)]
+    scan_interval: String,
+    #[serde(default)]
     model_rows: Option<usize>,
     #[serde(default)]
     disabled_providers: Vec<String>,
@@ -222,6 +304,7 @@ impl StoredSettings {
             theme: theme_key(settings.theme).to_owned(),
             default_range: range_key(settings.default_range).to_owned(),
             scan_on_launch: Some(settings.scan_on_launch),
+            scan_interval: settings.scan_interval.key().to_owned(),
             model_rows: Some(settings.model_rows),
             disabled_providers: settings
                 .disabled_providers
@@ -239,6 +322,8 @@ impl StoredSettings {
             theme: theme_from_key(&self.theme).unwrap_or(defaults.theme),
             default_range: range_from_key(&self.default_range).unwrap_or(defaults.default_range),
             scan_on_launch: self.scan_on_launch.unwrap_or(defaults.scan_on_launch),
+            scan_interval: ScanInterval::from_key(&self.scan_interval)
+                .unwrap_or(defaults.scan_interval),
             model_rows: self
                 .model_rows
                 .map(clamp_model_rows)
@@ -346,6 +431,7 @@ mod tests {
             theme: ThemeMode::Light,
             default_range: TimeWindow::PreviousMonth,
             scan_on_launch: false,
+            scan_interval: ScanInterval::Hourly,
             model_rows: 5,
             disabled_providers: vec![Provider::Kimi, Provider::Antigravity],
             check_for_updates: false,
@@ -452,6 +538,7 @@ mod tests {
         assert!(!SettingsChange::Theme(ThemeMode::Dark).requires_rescan());
         assert!(!SettingsChange::ModelRows(5).requires_rescan());
         assert!(!SettingsChange::ScanOnLaunch(false).requires_rescan());
+        assert!(!SettingsChange::ScanInterval(ScanInterval::Off).requires_rescan());
         assert!(!SettingsChange::DefaultRange(TimeWindow::Last7Days).requires_rescan());
         assert!(!SettingsChange::CheckForUpdates(false).requires_rescan());
         assert!(!SettingsChange::UpdateChannel(Channel::Beta).requires_rescan());
@@ -472,11 +559,77 @@ mod tests {
     }
 
     #[test]
+    fn every_scan_interval_survives_the_file_under_its_own_key() {
+        for interval in ScanInterval::ALL {
+            assert_eq!(ScanInterval::from_key(interval.key()), Some(interval));
+
+            let settings = Settings {
+                scan_interval: interval,
+                ..Default::default()
+            };
+            assert_eq!(round_trip(&settings).scan_interval, interval);
+        }
+    }
+
+    #[test]
+    fn an_unrecognised_interval_falls_back_rather_than_disabling_the_timer() {
+        // Both cases a real file produces: a value from a future release, and
+        // a file written before the key existed at all.
+        let stored: StoredSettings = serde_json::from_str(r#"{"scan_interval":"7s"}"#).unwrap();
+        assert_eq!(
+            stored.into_settings().scan_interval,
+            Settings::default().scan_interval
+        );
+
+        let stored: StoredSettings = serde_json::from_str(r#"{"theme":"dark"}"#).unwrap();
+        assert_eq!(
+            stored.into_settings().scan_interval,
+            Settings::default().scan_interval
+        );
+    }
+
+    #[test]
+    fn only_off_has_no_interval_to_wait() {
+        assert_eq!(ScanInterval::Off.duration(), None);
+        assert_eq!(
+            ScanInterval::FiveMinutes.duration(),
+            Some(Duration::from_secs(300))
+        );
+        assert_eq!(
+            ScanInterval::Hourly.duration(),
+            Some(Duration::from_secs(3600))
+        );
+
+        // Every other option must give the timer something to wait for, and
+        // the list must stay in ascending order so the segmented control in
+        // the dialog reads left to right.
+        let waits: Vec<Duration> = ScanInterval::ALL
+            .into_iter()
+            .filter_map(|i| i.duration())
+            .collect();
+        assert_eq!(waits.len(), ScanInterval::ALL.len() - 1);
+        assert!(waits.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn the_scan_interval_is_a_plain_choice() {
+        let mut settings = Settings::default();
+
+        SettingsChange::ScanInterval(ScanInterval::Off).apply_to(&mut settings);
+        assert_eq!(settings.scan_interval, ScanInterval::Off);
+        assert_eq!(settings.scan_interval.duration(), None);
+
+        SettingsChange::ScanInterval(ScanInterval::FiveMinutes).apply_to(&mut settings);
+        assert_eq!(settings.scan_interval, ScanInterval::FiveMinutes);
+    }
+
+    #[test]
     fn restoring_defaults_clears_every_edit() {
         let mut settings = Settings {
             theme: ThemeMode::Dark,
             default_range: TimeWindow::Last7Days,
             scan_on_launch: false,
+            scan_interval: ScanInterval::Off,
             model_rows: 25,
             disabled_providers: vec![Provider::Claude],
             check_for_updates: false,
