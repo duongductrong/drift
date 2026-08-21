@@ -14,6 +14,7 @@ use crate::theme::{Theme, ThemeMode};
 
 use super::components::{Button, IconButton, SectionHeader};
 use super::icons::Icon;
+use super::mole_mark::MoleMark;
 
 // ---------------------------------------------------------------------------
 // SettingsDialog — a modal sheet over the dashboard.
@@ -134,6 +135,10 @@ impl RenderOnce for SettingsDialog {
         let emit = |change| report(self.on_change.clone(), change);
 
         // ── Header ─────────────────────────────────────────────────
+        //
+        // The brand mark sits dead center for recognition; flanking it with
+        // two equal `flex_1` zones keeps it centered no matter how wide the
+        // label and the close button are.
         let on_close = self.on_close.clone();
         let header = div()
             .flex_none()
@@ -143,20 +148,25 @@ impl RenderOnce for SettingsDialog {
             .border_color(theme.border)
             .flex()
             .items_center()
-            .justify_between()
+            .gap(px(12.0))
             .child(
                 div()
+                    .flex_1()
+                    .min_w_0()
                     .text_size(px(13.0))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(theme.text)
                     .child("Settings"),
             )
+            .child(MoleMark::new(px(36.0)))
             .child(
-                IconButton::new("settings-close", Icon::Close).on_click(move |window, cx| {
-                    if let Some(handler) = &on_close {
-                        handler(window, cx);
-                    }
-                }),
+                div().flex_1().flex().justify_end().child(
+                    IconButton::new("settings-close", Icon::Close).on_click(move |window, cx| {
+                        if let Some(handler) = &on_close {
+                            handler(window, cx);
+                        }
+                    }),
+                ),
             );
 
         // ── Appearance ─────────────────────────────────────────────

@@ -166,6 +166,14 @@ cargo run      # debug build
 cargo test -- --ignored --nocapture   # the update check against the real GitHub API
 ```
 
+`cargo run` starts the bare binary, which macOS shows with the generic
+executable icon in the Dock — an app icon only comes from a bundle. Run the
+bundled app instead when you want to see it:
+
+```bash
+scripts/bundle-macos.sh && open dist/Mole.app
+```
+
 Layout:
 
 ```

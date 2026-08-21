@@ -5,6 +5,7 @@ pub mod empty_state;
 pub mod icons;
 pub mod metric_tile;
 pub mod model_row;
+pub mod mole_mark;
 pub mod provider_row;
 pub mod scroll_area;
 pub mod settings_dialog;
