@@ -35,7 +35,7 @@ use gpui::{Menu, MenuItem, SystemMenuType};
 pub const SETTINGS_DIALOG_CONTEXT: &str = "SettingsDialog";
 
 actions!(
-    drift,
+    mole,
     [
         /// Close the focused window.
         CloseWindow,
@@ -118,18 +118,18 @@ fn set_menus(cx: &mut App) {
     cx.set_menus([
         // The leading menu is the application menu; macOS titles it with the
         // process name, so the name given here is never shown.
-        Menu::new("Drift").items([
+        Menu::new("Mole").items([
             MenuItem::action("Check for Updates…", CheckForUpdates),
             MenuItem::separator(),
             MenuItem::action("Settings…", OpenSettings),
             MenuItem::separator(),
             MenuItem::os_submenu("Services", SystemMenuType::Services),
             MenuItem::separator(),
-            MenuItem::action("Hide Drift", Hide),
+            MenuItem::action("Hide Mole", Hide),
             MenuItem::action("Hide Others", HideOthers),
             MenuItem::action("Show All", ShowAll),
             MenuItem::separator(),
-            MenuItem::action("Quit Drift", Quit),
+            MenuItem::action("Quit Mole", Quit),
         ]),
         // No full screen item here on purpose: AppKit appends its own to any
         // menu named "View", and unlike one of ours that item retitles itself

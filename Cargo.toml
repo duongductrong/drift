@@ -1,13 +1,13 @@
 [package]
-name = "drift"
+name = "mole"
 version = "0.1.0"
 edition = "2024"
 
 # macOS names an unbundled app after its executable file, so the binary is
-# capitalised even though the crate is not: `cargo run` shows "Drift" in the
+# capitalised even though the crate is not: `cargo run` shows "Mole" in the
 # menu bar, matching CFBundleName in the bundled build.
 [[bin]]
-name = "Drift"
+name = "Mole"
 path = "src/main.rs"
 
 [dependencies]

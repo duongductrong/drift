@@ -6,19 +6,19 @@
 
   Two version keys and two of our own, because they answer different questions:
   Apple's keys must be dotted integers, so a beta's `-beta.1` suffix cannot go
-  in them; `DriftReleaseVersion` and `DriftReleaseChannel` carry the full,
+  in them; `MoleReleaseVersion` and `MoleReleaseChannel` carry the full,
   channel-identifying version for anyone inspecting a downloaded build.
 -->
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>Drift</string>
+    <string>Mole</string>
     <key>CFBundleDisplayName</key>
-    <string>Drift</string>
+    <string>Mole</string>
     <key>CFBundleIdentifier</key>
     <string>@BUNDLE_ID@</string>
     <key>CFBundleExecutable</key>
-    <string>Drift</string>
+    <string>Mole</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleInfoDictionaryVersion</key>
@@ -27,9 +27,9 @@
     <string>@SHORT_VERSION@</string>
     <key>CFBundleVersion</key>
     <string>@SHORT_VERSION@</string>
-    <key>DriftReleaseVersion</key>
+    <key>MoleReleaseVersion</key>
     <string>@VERSION@</string>
-    <key>DriftReleaseChannel</key>
+    <key>MoleReleaseChannel</key>
     <string>@CHANNEL@</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>

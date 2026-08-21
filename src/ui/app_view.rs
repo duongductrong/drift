@@ -326,7 +326,7 @@ impl Render for AppView {
                     .text_size(px(15.0))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(theme.text)
-                    .child("Drift"),
+                    .child("Mole"),
             )
             .left(
                 div()

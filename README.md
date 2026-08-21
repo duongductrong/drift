@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/banner.svg" alt="Drift — local usage dashboard for AI coding agents" width="100%">
+  <img src="assets/banner.svg" alt="Mole — local usage dashboard for AI coding agents" width="100%">
 </p>
 
 <p align="center">
@@ -8,15 +8,15 @@
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg" alt="Platform: macOS | Linux">
 </p>
 
-# Drift
+# Mole
 
-Drift is a native desktop dashboard for the token usage and estimated cost of your AI
+Mole is a native desktop dashboard for the token usage and estimated cost of your AI
 coding agents. It reads the transcripts and local databases those tools already write
 to your machine, aggregates them, and renders the result as a chart with per-provider
 and per-model breakdowns.
 
 Everything happens locally: no account, no API keys, and no telemetry. Your transcripts
-are opened read-only and never leave the machine. The one request Drift makes is the
+are opened read-only and never leave the machine. The one request Mole makes is the
 update check — a public GitHub Releases lookup you can turn off in Settings.
 
 ## Features
@@ -39,14 +39,14 @@ update check — a public GitHub Releases lookup you can turn off in Settings.
 - **Settings** — theme (system / light / dark), default range, scan-on-launch, automatic
   rescan interval, model row count, and a per-provider on/off switch that narrows what gets
   scanned.
-- **Update checks** — Drift asks GitHub whether a newer release exists, on the Stable or
+- **Update checks** — Mole asks GitHub whether a newer release exists, on the Stable or
   Beta channel. Stable never offers a pre-release; Beta offers whichever build is newest.
   Off in one click, and it downloads nothing by itself.
 - **Native chrome** — custom toolbar, macOS menu bar, and keyboard shortcuts.
 
 ## Data sources
 
-Drift never asks where your data is; each provider is read from its standard location.
+Mole never asks where your data is; each provider is read from its standard location.
 
 | Provider | Location | Format |
 | --- | --- | --- |
@@ -60,7 +60,7 @@ Missing directories are skipped, so only the agents you actually use show up.
 
 ## How cost is computed
 
-When a provider records what it charged — Claude's `costUSD`, OpenCode's `cost` — Drift
+When a provider records what it charged — Claude's `costUSD`, OpenCode's `cost` — Mole
 uses that number. Otherwise it prices the event from a built-in table covering Anthropic,
 OpenAI, Kimi, Gemini, and the models OpenCode hosts, with separate rates for fresh input,
 cached input, cache writes, and output. Lookups fall back to a prefix match, so dated model
@@ -92,15 +92,15 @@ and takes a while. Later builds are incremental.
 
 ## Install
 
-Download the latest DMG from [Releases](https://github.com/duongductrong/drift/releases),
-drag Drift to Applications, and open it. Beta builds are published as pre-releases; a
+Download the latest DMG from [Releases](https://github.com/duongductrong/mole/releases),
+drag Mole to Applications, and open it. Beta builds are published as pre-releases; a
 stable install is never offered one unless you switch channel in Settings.
 
 From source:
 
 ```bash
-git clone https://github.com/duongductrong/drift.git
-cd drift
+git clone https://github.com/duongductrong/mole.git
+cd mole
 cargo run --release
 ```
 
@@ -120,7 +120,7 @@ Releasing is documented in [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Usage
 
-Drift scans on launch by default and shows a skeleton while it works. Pick a range from the
+Mole scans on launch by default and shows a skeleton while it works. Pick a range from the
 pill in the filter bar, switch between cost and tokens on the chart, and hover a bar for its
 breakdown. Turning a provider off in Settings removes it from the next scan entirely.
 
@@ -140,8 +140,8 @@ every setting, `Off` included.
 | `Esc` | Dismiss the settings dialog |
 | `⌘Q` / `Ctrl+Q` | Quit |
 
-Settings are stored as JSON at `~/Library/Application Support/drift/settings.json` on macOS
-and `~/.config/drift/settings.json` on Linux. The file is optional and hand-editable;
+Settings are stored as JSON at `~/Library/Application Support/mole/settings.json` on macOS
+and `~/.config/mole/settings.json` on Linux. The file is optional and hand-editable;
 unknown or corrupt values fall back to the defaults.
 
 ### Updates
@@ -149,7 +149,7 @@ unknown or corrupt values fall back to the defaults.
 Settings → Updates holds the whole feature: a switch for the check on launch, the channel
 to follow, and a **Check now** button that works even with the launch check off. When a
 newer build exists the toolbar grows an *Update to …* button; both it and **Download**
-open the release page — Drift never installs anything itself.
+open the release page — Mole never installs anything itself.
 
 A build's own version decides which channel it starts on, so installing a beta opts you
 into betas and nothing moves a stable install onto one silently. Semantic versions are

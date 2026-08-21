@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="320" viewBox="0 0 1200 320" role="img" aria-label="Drift — local usage dashboard for AI coding agents">
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="320" viewBox="0 0 1200 320" role="img" aria-label="Mole — local usage dashboard for AI coding agents">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0%" stop-color="#16181D"/>
@@ -10,7 +10,7 @@
   <rect x="0.5" y="0.5" width="1199" height="319" rx="16" fill="none" stroke="#2A2E36"/>
 
   <g font-family="Inter, SF Pro Display, Helvetica Neue, Arial, sans-serif">
-    <text x="72" y="132" fill="#F2F4F7" font-size="64" font-weight="600" letter-spacing="-1.5">Drift</text>
+    <text x="72" y="132" fill="#F2F4F7" font-size="64" font-weight="600" letter-spacing="-1.5">Mole</text>
     <text x="72" y="176" fill="#9BA3AF" font-size="20">Local usage dashboard for AI coding agents</text>
     <text x="72" y="212" fill="#6B7280" font-size="14">Reads transcripts on your machine · no account, no network calls</text>
 

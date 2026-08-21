@@ -4,7 +4,7 @@ use semver::Version;
 use serde::Deserialize;
 
 // ---------------------------------------------------------------------------
-// Update checking — "is there a newer Drift than the one running?"
+// Update checking — "is there a newer Mole than the one running?"
 //
 // Deliberately in `core`, and deliberately free of GPUI: everything here takes
 // plain values and returns plain values, so the whole decision — which
@@ -38,7 +38,7 @@ pub const REPO: &str = match option_env!("DRIFT_UPDATE_REPO") {
     // An empty value is a build script that meant to set it and did not; the
     // default is a better answer than a request to `/repos//releases`.
     Some(repo) if !repo.is_empty() => repo,
-    _ => "duongductrong/drift",
+    _ => "duongductrong/mole",
 };
 
 /// How many releases to ask GitHub for. Enough that a run of betas cannot
@@ -303,7 +303,7 @@ fn fetch_releases(repo: &str) -> Result<String, UpdateError> {
     // per launch is nowhere near.
     let response = agent
         .get(&url)
-        .header("User-Agent", concat!("drift/", env!("CARGO_PKG_VERSION")))
+        .header("User-Agent", concat!("mole/", env!("CARGO_PKG_VERSION")))
         .header("Accept", "application/vnd.github+json")
         .header("X-GitHub-Api-Version", "2022-11-28")
         .call();
@@ -587,12 +587,12 @@ mod tests {
     fn a_release_keeps_its_notes_title_and_page() {
         let body = r#"[{
             "tag_name":"v1.2.0","draft":false,"prerelease":false,
-            "name":"Drift 1.2.0","body":"Stable release.\n\n## Features\n- Something",
+            "name":"Mole 1.2.0","body":"Stable release.\n\n## Features\n- Something",
             "html_url":"https://github.test/r/releases/tag/v1.2.0",
             "assets":[]
         }]"#;
         let release = &parse_releases(body).unwrap()[0];
-        assert_eq!(release.name, "Drift 1.2.0");
+        assert_eq!(release.name, "Mole 1.2.0");
         assert_eq!(release.notes, "Stable release.\n\n## Features\n- Something");
         assert_eq!(release.url, "https://github.test/r/releases/tag/v1.2.0");
         assert_eq!(release.tag, "v1.2.0");
@@ -613,12 +613,12 @@ mod tests {
         };
 
         // Non-DMG assets are never offered as a download.
-        assert_eq!(pick_dmg(&[asset("Drift-1.0.0.tar.gz")]), None);
+        assert_eq!(pick_dmg(&[asset("Mole-1.0.0.tar.gz")]), None);
         assert_eq!(pick_dmg(&[]), None);
 
         let both = [
-            asset("Drift-1.0.0-x86_64.dmg"),
-            asset("Drift-1.0.0-aarch64.dmg"),
+            asset("Mole-1.0.0-x86_64.dmg"),
+            asset("Mole-1.0.0-aarch64.dmg"),
         ];
         let chosen = pick_dmg(&both).unwrap();
         let expected = match std::env::consts::ARCH {
@@ -628,13 +628,13 @@ mod tests {
         assert!(chosen.contains(expected), "picked {chosen}");
 
         // A universal build serves any architecture...
-        let universal = [asset("Drift-1.0.0-universal.dmg")];
+        let universal = [asset("Mole-1.0.0-universal.dmg")];
         assert!(pick_dmg(&universal).unwrap().contains("universal"));
 
         // ...and an unlabelled DMG is better than telling the user there is
         // nothing to download.
-        let plain = [asset("Drift.dmg")];
-        assert!(pick_dmg(&plain).unwrap().ends_with("Drift.dmg"));
+        let plain = [asset("Mole.dmg")];
+        assert!(pick_dmg(&plain).unwrap().ends_with("Mole.dmg"));
     }
 
     #[test]

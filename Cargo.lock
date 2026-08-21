@@ -1396,21 +1396,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 
 [[package]]
-name = "drift"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "dirs",
- "gpui",
- "gpui_platform",
- "rusqlite",
- "semver",
- "serde",
- "serde_json",
- "ureq",
-]
-
-[[package]]
 name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3257,6 +3242,21 @@ checksum = "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316"
 dependencies = [
  "adler2",
  "simd-adler32",
+]
+
+[[package]]
+name = "mole"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "dirs",
+ "gpui",
+ "gpui_platform",
+ "rusqlite",
+ "semver",
+ "serde",
+ "serde_json",
+ "ureq",
 ]
 
 [[package]]

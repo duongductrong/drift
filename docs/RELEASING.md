@@ -41,9 +41,9 @@ What it relies on:
 | --- | --- | --- |
 | Tag | `v<semver>` with a pre-release suffix, e.g. `v0.2.0-beta.1` | `v<semver>`, e.g. `v0.2.0` |
 | GitHub `prerelease` flag | true | false |
-| DMG asset | `Drift-<version>-<arch>.dmg` | same |
-| `Info.plist` `DriftReleaseChannel` | `beta` | `stable` |
-| `Info.plist` `DriftReleaseVersion` | full version, suffix included | full version |
+| DMG asset | `Mole-<version>-<arch>.dmg` | same |
+| `Info.plist` `MoleReleaseChannel` | `beta` | `stable` |
+| `Info.plist` `MoleReleaseVersion` | full version, suffix included | full version |
 
 The channel is carried twice on purpose — in the tag and in the pre-release
 flag — and either one is enough to keep a build away from stable users. The
@@ -86,7 +86,7 @@ open. Configure them on the `release` environment (or as repository secrets).
 | `APPLE_API_KEY_ID` | That key's ID. |
 | `APPLE_API_ISSUER` | The issuer UUID it belongs to. |
 
-Optional variable: `BUNDLE_ID` (defaults to `com.trongduong.drift`).
+Optional variable: `BUNDLE_ID` (defaults to `com.trongduong.mole`).
 
 ```bash
 # Producing the two base64 blobs
@@ -114,7 +114,7 @@ The result lands in `dist/`. An unsigned build opens after a right-click →
 **Open**, or:
 
 ```bash
-xattr -dr com.apple.quarantine /Applications/Drift.app
+xattr -dr com.apple.quarantine /Applications/Mole.app
 ```
 
 CI can build the same thing: Actions → **CI** → *Run workflow* uploads an

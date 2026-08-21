@@ -115,7 +115,7 @@ pub struct Settings {
     pub disabled_providers: Vec<Provider>,
     /// Whether launching the app asks GitHub whether a newer one exists.
     ///
-    /// This is the only thing Drift ever sends over the network, so it is a
+    /// This is the only thing Mole ever sends over the network, so it is a
     /// setting rather than an assumption: off means the app stays entirely
     /// local, and the button in Settings still works when asked.
     pub check_for_updates: bool,
@@ -383,9 +383,9 @@ fn provider_from_key(key: &str) -> Option<Provider> {
     Provider::ALL.into_iter().find(|p| provider_key(*p) == key)
 }
 
-/// Where the settings file lives: `<config dir>/drift/settings.json`.
+/// Where the settings file lives: `<config dir>/mole/settings.json`.
 pub fn config_path() -> Option<PathBuf> {
-    Some(dirs::config_dir()?.join("drift").join("settings.json"))
+    Some(dirs::config_dir()?.join("mole").join("settings.json"))
 }
 
 fn load() -> Settings {

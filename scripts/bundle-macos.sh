@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build Drift.app and a DMG from it.
+# Build Mole.app and a DMG from it.
 #
 # Two modes, chosen by what is in the environment rather than by a flag, so the
 # same script serves a laptop and a release runner:
@@ -24,7 +24,7 @@
 #   APPLE_API_ISSUER
 #   — or the Apple ID route:
 #   APPLE_ID, APPLE_APP_PASSWORD, APPLE_TEAM_ID
-#   BUNDLE_ID               Defaults to com.trongduong.drift.
+#   BUNDLE_ID               Defaults to com.trongduong.mole.
 
 set -euo pipefail
 
@@ -35,9 +35,9 @@ set +x
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-APP_NAME="Drift"
-BINARY_NAME="Drift"
-BUNDLE_ID="${BUNDLE_ID:-com.trongduong.drift}"
+APP_NAME="Mole"
+BINARY_NAME="Mole"
+BUNDLE_ID="${BUNDLE_ID:-com.trongduong.mole}"
 
 VERSION=""
 CHANNEL="stable"

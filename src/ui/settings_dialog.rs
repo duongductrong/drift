@@ -245,7 +245,7 @@ impl RenderOnce for SettingsDialog {
         // ── Scanning ───────────────────────────────────────────────
         //
         // Reads on from "Scan on launch" above: between them they say when
-        // Drift reads the transcripts on its own. The refresh button is
+        // Mole reads the transcripts on its own. The refresh button is
         // unaffected by either and works even on "Off".
         let interval_options = ScanInterval::ALL
             .into_iter()
