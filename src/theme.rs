@@ -57,6 +57,26 @@ pub struct Theme {
     pub chart_kimi: Hsla,
     pub chart_opencode: Hsla,
     pub chart_antigravity: Hsla,
+
+    // App-specific: activity heatmap intensity ramp
+    //
+    // The one place in the palette where color means *how much* rather than
+    // *which provider*. The grid it paints carries no provider legend and
+    // never mixes hues, so a single ramp is free to reuse the brand's
+    // terracotta without impersonating Claude's series color.
+    /// A day the range covers but nothing happened on. Neutral gray, and
+    /// deliberately hueless: the terracotta ramp is reserved for days with
+    /// usage, so an empty cell must not read as "the quietest step" — it is
+    /// no data at all. Gray rather than a near-canvas wash so quiet stretches
+    /// still read as part of the grid instead of holes eaten out of it.
+    pub heat_empty: Hsla,
+    /// Four steps of rising usage. Each mode's steps are chosen against its own
+    /// surface rather than flipped from the other's, and chroma climbs with
+    /// lightness, so magnitude is carried by saturation as well as by tone.
+    ///
+    /// Both ramps are monotone in OKLCH lightness with every neighbouring pair
+    /// at least 0.05 apart, and the top step clears 4.5:1 against its surface.
+    pub heat: [Hsla; 4],
 }
 
 #[derive(Clone, Copy)]
@@ -99,6 +119,14 @@ impl Theme {
             chart_kimi: rgb(0x8B5CF6).into(),
             chart_opencode: rgb(0x06B6D4).into(),
             chart_antigravity: rgb(0x4285F4).into(),
+
+            heat_empty: rgb(0x303030).into(),
+            heat: [
+                rgb(0x4B2F27).into(),
+                rgb(0x794232).into(),
+                rgb(0xAE5940).into(),
+                rgb(0xE8724F).into(),
+            ],
         }
     }
 
@@ -126,6 +154,14 @@ impl Theme {
             chart_kimi: rgb(0x7C3AED).into(),
             chart_opencode: rgb(0x0891B2).into(),
             chart_antigravity: rgb(0x1A73E8).into(),
+
+            heat_empty: rgb(0xE4E4E4).into(),
+            heat: [
+                rgb(0xEAD3CE).into(),
+                rgb(0xDBA99D).into(),
+                rgb(0xCB7D69).into(),
+                rgb(0xB8492C).into(),
+            ],
         }
     }
 }

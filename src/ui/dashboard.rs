@@ -1,6 +1,7 @@
 use gpui::{div, prelude::*, px, Context, SharedString, Window};
 use crate::core::types::{
-    spans_multiple_months, Granularity, ProjectUsage, TimeWindow, UsageMetric, UsageSnapshot,
+    spans_multiple_months, spans_multiple_weeks, Granularity, ProjectUsage, TimeWindow,
+    UsageMetric, UsageSnapshot,
 };
 use crate::settings::Settings;
 use crate::theme::Theme;
@@ -12,14 +13,40 @@ use super::provider_row::ProviderRow;
 use super::scroll_area::ScrollArea;
 use super::skeleton::render_dashboard_skeleton;
 use super::usage_chart::UsageChart;
+use super::usage_heatmap::UsageHeatmap;
 use super::usage_filters::{FilterMenu, ProjectOption, UsageFilters};
+
+/// Which drawing the daily series is read through.
+///
+/// Both views answer different questions over the same events — the bars say
+/// how much and from whom, the grid says on which days — so exactly one of
+/// them occupies the time-series slot at a time. The grid is strictly opt-in:
+/// the page never stacks both drawings, it swaps between them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TimeView {
+    /// Stacked provider bars, one per day or month per [`Granularity`].
+    Chart,
+    /// One cell per calendar day, colored by that day's intensity.
+    Activity,
+}
+
+impl TimeView {
+    pub const ALL: [TimeView; 2] = [TimeView::Chart, TimeView::Activity];
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            TimeView::Chart => "Chart",
+            TimeView::Activity => "Activity",
+        }
+    }
+}
 
 /// Emitted when the user picks a different time window so the parent
 /// (`AppView`) can trigger a rescan. Carries no payload: the new window is
 /// already stored on `Dashboard::selected_window` before this is emitted.
 ///
-/// Granularity changes deliberately emit nothing: they re-bucket data the
-/// snapshot already holds, so the switch never costs a rescan.
+/// Granularity and view changes deliberately emit nothing: both re-draw data
+/// the snapshot already holds, so neither switch ever costs a rescan.
 #[derive(Clone, Debug)]
 pub struct WindowChanged;
 
@@ -37,6 +64,13 @@ pub struct Dashboard {
     /// view choice over the snapshot already in hand, so switching it costs a
     /// re-render and nothing more.
     pub metric: UsageMetric,
+    /// Which drawing the time-series slot shows. Bars by default: the chart
+    /// answers the question most people open the app with, and the activity
+    /// grid stays one click away instead of doubling the page's length. Like
+    /// `preferred_granularity` this is what the user asked for rather than
+    /// what is drawn — a range too short to hold a readable grid falls back
+    /// to bars without forgetting the choice.
+    pub preferred_view: TimeView,
     /// The project the page is narrowed to, by path; `None` counts every
     /// project. Like `preferred_granularity` this is what the user asked for
     /// rather than what is drawn — a range holding no usage for it falls back
@@ -59,6 +93,8 @@ impl Dashboard {
             preferred_granularity: Granularity::Daily,
             // Cost leads: it is the question most people open the app with.
             metric: UsageMetric::Cost,
+            // Bars first; the grid is opt-in, not a second permanent section.
+            preferred_view: TimeView::Chart,
             // Everything, until the user narrows it: the page's first job is
             // the total across projects.
             preferred_project: None,
@@ -75,6 +111,19 @@ impl Dashboard {
             self.preferred_granularity
         } else {
             Granularity::Daily
+        }
+    }
+
+    /// The time view actually drawn: the preference, downgraded to bars when
+    /// the active range cannot hold a readable grid — fewer than three weeks
+    /// has no rhythm to show, and a grid of one or two columns would invent
+    /// one. The preference survives, so returning to a longer range restores
+    /// the grid instead of silently resetting it.
+    fn effective_view(&self, activity_available: bool) -> TimeView {
+        if activity_available {
+            self.preferred_view
+        } else {
+            TimeView::Chart
         }
     }
 
@@ -143,14 +192,25 @@ impl Render for Dashboard {
         let monthly_available = spans_multiple_months(snap.start_date, snap.end_date);
         let granularity = self.effective_granularity(monthly_available);
 
-        // Spells out the range → aggregation relationship in words, so the
-        // pill above never has to be decoded: "these dates, one bar per day".
+        // Same availability logic as Monthly: read off the snapshot's own
+        // dates rather than recomputed from today, so the switch always
+        // describes the data on screen — including while a rescan for a new
+        // range is still in flight.
+        let activity_available = spans_multiple_weeks(snap.start_date, snap.end_date);
+        let view = self.effective_view(activity_available);
+
+        // Spells out the range → drawing relationship in words, so the pill
+        // above never has to be decoded: "these dates, one bar per day".
         let metric = self.metric;
+        let cadence = match view {
+            TimeView::Chart => format!("one bar per {}", granularity.bucket_noun()),
+            TimeView::Activity => "one cell per day".to_owned(),
+        };
         let mut caption = format!(
-            "{} – {} · one bar per {} · measured in {}",
+            "{} – {} · {} · measured in {}",
             snap.start_date.format("%b %d"),
             snap.end_date.format("%b %d, %Y"),
-            granularity.bucket_noun(),
+            cadence,
             metric.label().to_lowercase(),
         );
         // Under a filter the page's numbers are one project's, which says
@@ -255,6 +315,70 @@ impl Render for Dashboard {
                 })
         };
 
+        // ── Time-view switch: Chart | Activity ─────────────────────
+        //
+        // The two drawings answer different questions over the same events,
+        // so one control picks between them rather than stacking both on the
+        // page — same slot, different drawing, nothing appended. Styled as
+        // the same segmented pill as the Daily/Monthly switch, because it is
+        // the same kind of choice; Activity ghosts out on ranges too short
+        // for a grid, exactly like Monthly does inside one calendar month.
+        let select_view = cx.entity().downgrade();
+        let mut segments = div().flex().items_center();
+        for option in TimeView::ALL {
+            let is_selected = option == view;
+            let is_enabled = option == TimeView::Chart || activity_available;
+            let on_select = select_view.clone();
+
+            segments = segments.child(
+                div()
+                    .id(SharedString::from(format!("view-{}", option.label())))
+                    .h(px(26.0))
+                    .px(px(10.0))
+                    .flex()
+                    .items_center()
+                    .cursor_default()
+                    .text_size(px(10.5))
+                    .bg(if is_selected {
+                        theme.overlay_strong
+                    } else {
+                        gpui::transparent_black()
+                    })
+                    .text_color(match (is_enabled, is_selected) {
+                        (false, _) => theme.text_ghost,
+                        (true, true) => theme.text,
+                        (true, false) => theme.text_secondary,
+                    })
+                    .when(is_enabled && !is_selected, |el| {
+                        el.hover(|style| style.text_color(theme.text))
+                    })
+                    .child(option.label())
+                    .when(is_enabled, |el| {
+                        el.on_click(move |_event, _window, cx| {
+                            if let Some(view) = on_select.upgrade() {
+                                view.update(cx, |this, cx| {
+                                    if this.preferred_view != option {
+                                        this.preferred_view = option;
+                                        // Same events either way: a redraw,
+                                        // never a rescan.
+                                        cx.notify();
+                                    }
+                                });
+                            }
+                        })
+                    }),
+            );
+        }
+
+        let view_switch = div()
+            .flex()
+            .items_center()
+            .overflow_hidden()
+            .rounded(px(7.0))
+            .border_1()
+            .border_color(theme.border_strong)
+            .child(segments);
+
         // The caption leads, the controls sit at the trailing edge: reading
         // order is "here is the range on screen", then the pill that changes
         // it. The caption takes the slack so the pill stays pinned right.
@@ -271,7 +395,8 @@ impl Render for Dashboard {
                     .text_color(theme.text_tertiary)
                     .child(SharedString::from(caption)),
             )
-            .child(filters);
+            .child(filters)
+            .child(view_switch);
 
         // ── Headline stats ─────────────────────────────────────────
         //
@@ -302,66 +427,75 @@ impl Render for Dashboard {
                 SharedString::from(format_count(snap.session_count)),
             ));
 
-        // ── Provider share + usage chart (side by side) ────────────
-        let mut provider_section = div()
-            .flex()
-            .flex_col()
-            .gap(px(10.0))
-            .w(px(300.0))
-            .flex_none()
-            .child(SectionHeader::new("By Provider").hint(metric.label()));
+        // ── Time-series slot: one drawing at a time ────────────────
+        //
+        // The slot between the stat cards and the token strip holds exactly
+        // one view of the daily series — never both stacked. Whichever the
+        // switch picked reads the same filtered snapshot, so the project
+        // filter and the Cost/Tokens unit reach both drawings unchanged.
+        let time_row: gpui::AnyElement = match view {
+            TimeView::Activity => UsageHeatmap::new(&snap.daily, metric).into_any_element(),
+            TimeView::Chart => {
+                let mut provider_section = div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.0))
+                    .w(px(300.0))
+                    .flex_none()
+                    .child(SectionHeader::new("By Provider").hint(metric.label()));
 
-        // Ranked by the selected metric rather than by the scanner's cost
-        // order: under Tokens the cheap-but-busy provider belongs at the top.
-        let mut providers: Vec<_> = snap.by_provider.iter().collect();
-        providers.sort_by(|a, b| {
-            metric
-                .of_provider(b)
-                .partial_cmp(&metric.of_provider(a))
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+                // Ranked by the selected metric rather than by the scanner's
+                // cost order: under Tokens the cheap-but-busy provider belongs
+                // at the top.
+                let mut providers: Vec<_> = snap.by_provider.iter().collect();
+                providers.sort_by(|a, b| {
+                    metric
+                        .of_provider(b)
+                        .partial_cmp(&metric.of_provider(a))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
 
-        for prov in providers {
-            let color = provider_color(&theme, prov.provider);
-            let share = metric.share_of(prov);
-            provider_section = provider_section.child(
-                ProviderRow::new(
-                    prov.provider.label(),
-                    format_metric(metric, metric.of_provider(prov)),
-                    share as f32,
-                    color,
-                )
-                .detail(format!(
-                    "{} share · {}",
-                    format_percent(share),
-                    format_metric(other, other.of_provider(prov))
-                )),
-            );
-        }
+                for prov in providers {
+                    let color = provider_color(&theme, prov.provider);
+                    let share = metric.share_of(prov);
+                    provider_section = provider_section.child(
+                        ProviderRow::new(
+                            prov.provider.label(),
+                            format_metric(metric, metric.of_provider(prov)),
+                            share as f32,
+                            color,
+                        )
+                        .detail(format!(
+                            "{} share · {}",
+                            format_percent(share),
+                            format_metric(other, other.of_provider(prov))
+                        )),
+                    );
+                }
 
-        let chart = {
-            let select_metric = cx.entity().downgrade();
-
-            UsageChart::new(granularity.bucket(&snap.daily), granularity, metric)
-                .on_select_metric(move |selected, _window, cx| {
-                    let _ = select_metric.update(cx, |this, cx| {
-                        if this.metric != selected {
-                            this.metric = selected;
-                            // Same events, different unit: like granularity,
-                            // this re-renders the page and never reaches the
-                            // scanner.
-                            cx.notify();
-                        }
+                let select_metric = cx.entity().downgrade();
+                let chart = UsageChart::new(granularity.bucket(&snap.daily), granularity, metric)
+                    .on_select_metric(move |selected, _window, cx| {
+                        let _ = select_metric.update(cx, |this, cx| {
+                            if this.metric != selected {
+                                this.metric = selected;
+                                // Same events, different unit: like granularity,
+                                // this re-renders the page and never reaches the
+                                // scanner.
+                                cx.notify();
+                            }
+                        });
                     });
-                })
-        };
 
-        let summary_chart_row = div()
-            .flex()
-            .items_start()
-            .gap(px(28.0))
-            .child(provider_section)
-            .child(chart);
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(px(28.0))
+                    .child(provider_section)
+                    .child(chart)
+                    .into_any_element()
+            }
+        };
 
         // ── Token breakdown strip ──────────────────────────────────
         let active_days = snap.daily.iter().filter(|d| d.total_tokens > 0).count();
@@ -480,7 +614,7 @@ impl Render for Dashboard {
         ScrollArea::new("dashboard-scroll")
             .child(header)
             .child(stat_cards)
-            .child(summary_chart_row)
+            .child(time_row)
             .child(metric_strip)
             .child(model_section)
             .child(scan_info)
@@ -588,5 +722,27 @@ mod tests {
         // instead of quietly resetting the user's choice.
         assert_eq!(dashboard.preferred_granularity, Granularity::Monthly);
         assert_eq!(dashboard.effective_granularity(true), Granularity::Monthly);
+    }
+
+    #[test]
+    fn the_page_opens_showing_the_chart_not_the_grid() {
+        // The grid answers "on which days", which nobody asks before "how
+        // much" — it stays opt-in rather than doubling the page out of the box.
+        let dashboard = Dashboard::new(TimeWindow::Last30Days);
+        assert_eq!(dashboard.preferred_view, TimeView::Chart);
+        assert_eq!(dashboard.effective_view(true), TimeView::Chart);
+    }
+
+    #[test]
+    fn an_activity_preference_survives_a_range_too_short_for_a_grid() {
+        let mut dashboard = Dashboard::new(TimeWindow::Last30Days);
+        dashboard.preferred_view = TimeView::Activity;
+
+        // A range under three weeks has no rhythm to show, so bars are drawn…
+        assert_eq!(dashboard.effective_view(false), TimeView::Chart);
+        // …without forgetting the choice: a longer range restores the grid
+        // instead of silently resetting it, exactly like Monthly's handling.
+        assert_eq!(dashboard.preferred_view, TimeView::Activity);
+        assert_eq!(dashboard.effective_view(true), TimeView::Activity);
     }
 }

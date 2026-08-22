@@ -14,3 +14,4 @@ pub mod title_bar;
 pub mod tooltip;
 pub mod usage_chart;
 pub mod usage_filters;
+pub mod usage_heatmap;

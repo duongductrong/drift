@@ -360,6 +360,10 @@ fn range_key(range: TimeWindow) -> &'static str {
         TimeWindow::Last7Days => "last_7_days",
         TimeWindow::Last30Days => "last_30_days",
         TimeWindow::Last90Days => "last_90_days",
+        TimeWindow::Last180Days => "last_180_days",
+        TimeWindow::LastYear => "last_year",
+        TimeWindow::Last2Years => "last_2_years",
+        TimeWindow::Last3Years => "last_3_years",
         TimeWindow::CurrentMonth => "current_month",
         TimeWindow::PreviousMonth => "previous_month",
     }
