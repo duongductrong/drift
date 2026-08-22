@@ -1,7 +1,9 @@
+use std::collections::HashMap;
 use gpui::{div, prelude::*, px, Context, Entity, FocusHandle, SharedString, Task, Window};
 use crate::theme::Theme;
 use crate::core::scanner;
 use crate::core::pricing::PricingTable;
+use crate::core::types::{TimeWindow, UsageSnapshot};
 use crate::core::update::{self, CheckState};
 use crate::keymap::{
     CheckForUpdates, CloseWindow, Minimize, OpenSettings, Refresh, ToggleFullScreen, Zoom,
@@ -24,10 +26,11 @@ const UPDATE_CHECK_DELAY: std::time::Duration = std::time::Duration::from_secs(2
 /// again.
 ///
 /// The loop waits out the time left since the *last* scan rather than a fixed
-/// tick, so anything that scans in the meantime — the refresh button, a range
-/// change — pushes the next automatic scan back. That also means the remaining
-/// time can be zero, which without a floor here would spin the loop while a
-/// slow scan is still in flight.
+/// tick, so any real scan — the refresh button, a launch scan — pushes the
+/// next automatic one back. Switching ranges does not: a cache hit never
+/// touches the disk. That also means the remaining time can be zero, which
+/// without a floor here would spin the loop while a slow scan is still in
+/// flight.
 const AUTO_SCAN_MIN_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub struct AppView {
@@ -50,6 +53,23 @@ pub struct AppView {
     /// that dropping it cancels it: a GPUI `Task` stops when its handle goes,
     /// which is what turning the setting off — or closing the window — does.
     auto_scan: Option<Task<()>>,
+    /// The scan in flight, held for the same reason `auto_scan` is: starting
+    /// another scan drops this one, cancelling it rather than letting two
+    /// races fight over the page and double the disk reads the cache exists
+    /// to avoid.
+    scan: Option<Task<()>>,
+    /// Snapshots already scanned this session, by time window.
+    ///
+    /// Switching ranges reads this instead of the disk: scanning happens when
+    /// the user asks (refresh), when an interval tick comes due, or on a
+    /// range's first visit — never on navigation between ranges already
+    /// scanned, which swaps memory rather than re-reading every transcript.
+    /// Naturally bounded at one entry per [`TimeWindow`] variant, and each is
+    /// an aggregate rather than raw events. Whenever any scan completes, the
+    /// entries for every *other* range are dropped: they were built by an
+    /// earlier scan, and a hit would go on serving numbers older than the
+    /// refresh just paid for.
+    snapshot_cache: HashMap<TimeWindow, UsageSnapshot>,
     /// When the last scan finished, whoever asked for it. The interval is
     /// measured from here, so pressing refresh postpones the next automatic
     /// scan instead of being followed straight after by a second one.
@@ -61,12 +81,26 @@ impl AppView {
         let settings = Settings::current(cx);
         let dashboard = cx.new(|_| Dashboard::new(settings.default_range));
 
-        // Subscribe to window-change events so we trigger a rescan when the
-        // user picks a different time window.
+        // Subscribe to window-change events so picking a different range
+        // swaps to that range's numbers — from the cache when this session
+        // has already scanned it, and scanned for only when it has not.
         let dash = dashboard.clone();
-        cx.subscribe(&dash, |this: &mut Self, _dash, _event: &WindowChanged, cx| {
+        cx.subscribe(&dash, |this: &mut Self, dash, _event: &WindowChanged, cx| {
+            let selected = dash.read(cx).selected_window;
+            if let Some(snapshot) = this.snapshot_cache.get(&selected).cloned() {
+                // No disk, no skeleton, and `last_scan_at` untouched — a
+                // switch is not a scan, so the interval countdown keeps
+                // running as though nothing happened.
+                dash.update(cx, |d, cx| {
+                    d.snapshot = Some(snapshot);
+                    d.loading = false;
+                    cx.notify();
+                });
+                return;
+            }
             this.start_scan(cx);
-        }).detach();
+        })
+        .detach();
 
         // Auto-scan on startup so the user sees data immediately — unless the
         // user asked to be left alone until they press refresh.
@@ -105,6 +139,8 @@ impl AppView {
             focus,
             settings_focus: cx.focus_handle(),
             auto_scan: None,
+            scan: None,
+            snapshot_cache: HashMap::new(),
             // Counted from launch, so the first automatic scan is a full
             // interval away whether or not the launch scan ran.
             last_scan_at: std::time::Instant::now(),
@@ -234,27 +270,41 @@ impl AppView {
         cx.notify();
     }
 
+    /// Scan the selected range on the background executor and show the result.
+    ///
+    /// The one path every scan takes — refresh button, automatic tick, launch
+    /// scan, a settings change that altered what is counted — so it is also
+    /// where the result is cached for later switches.
     fn start_scan(&mut self, cx: &mut Context<Self>) {
         let dashboard = self.dashboard.clone();
         dashboard.update(cx, |d, cx| {
             d.loading = true;
             cx.notify();
         });
-        let window = dashboard.read(cx).selected_window;
+        let scanned_window = dashboard.read(cx).selected_window;
         // Which providers are counted is settings, not scanning: resolve it here
         // and hand the scanner a plain list.
         let providers = Settings::current(cx).enabled_providers();
-        cx.spawn(async move |this, cx| {
+        // Held rather than detached: a second scan drops this one instead of
+        // racing it to repaint the page with another range's numbers.
+        self.scan = Some(cx.spawn(async move |this, cx| {
             let snapshot = cx
                 .background_executor()
                 .spawn(async move {
                     let pricing = PricingTable::builtin();
-                    scanner::scan_all(window, &pricing, &providers)
+                    scanner::scan_all(scanned_window, &pricing, &providers)
                 })
                 .await;
             dashboard.update(cx, |d, cx| {
-                d.snapshot = Some(snapshot);
                 d.loading = false;
+                // The user may have switched ranges while this ran — a switch
+                // onto a cached range paints instantly without cancelling us —
+                // so the result claims the page only when its own range still
+                // owns it. Either way it lands in the cache below, ready for
+                // the trip back.
+                if d.selected_window == scanned_window {
+                    d.snapshot = Some(snapshot.clone());
+                }
                 cx.notify();
             });
             // Time the next automatic scan from here rather than from the
@@ -262,9 +312,14 @@ impl AppView {
             // is never followed immediately by another.
             let _ = this.update(cx, |this, _cx| {
                 this.last_scan_at = std::time::Instant::now();
+                // Entries for other ranges predate this scan; keeping them
+                // would serve numbers older than the refresh just paid for,
+                // since a hit never rescans. They go, and each returns the
+                // honest way: one fresh scan on its next visit.
+                this.snapshot_cache.clear();
+                this.snapshot_cache.insert(scanned_window, snapshot);
             });
-        })
-        .detach();
+        }));
     }
 
     fn rescan(&mut self, cx: &mut Context<Self>) {
@@ -276,6 +331,9 @@ impl AppView {
     fn apply_setting(&mut self, change: SettingsChange, cx: &mut Context<Self>) {
         let previous_interval = Settings::current(cx).scan_interval;
         if settings::update(cx, change) {
+            // The provider set changed, so every cached range was built from
+            // events nobody counts anymore.
+            self.snapshot_cache.clear();
             self.start_scan(cx);
         }
         // Compared rather than matched on the variant, so "Restore defaults"

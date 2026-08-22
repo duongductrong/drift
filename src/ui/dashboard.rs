@@ -42,11 +42,13 @@ impl TimeView {
 }
 
 /// Emitted when the user picks a different time window so the parent
-/// (`AppView`) can trigger a rescan. Carries no payload: the new window is
-/// already stored on `Dashboard::selected_window` before this is emitted.
+/// (`AppView`) can show that range's numbers — served from its snapshot cache
+/// when this session has already scanned the range, and scanned for fresh
+/// when it has not. Carries no payload: the new window is already stored on
+/// `Dashboard::selected_window` before this is emitted.
 ///
 /// Granularity and view changes deliberately emit nothing: both re-draw data
-/// the snapshot already holds, so neither switch ever costs a rescan.
+/// the snapshot already holds, so neither switch ever reaches the scanner.
 #[derive(Clone, Debug)]
 pub struct WindowChanged;
 
@@ -277,7 +279,9 @@ impl Render for Dashboard {
                         if this.selected_window != tw {
                             this.selected_window = tw;
                             // A different range means different events: only
-                            // this path costs a rescan.
+                            // this path asks the parent for a snapshot, and
+                            // the parent answers from its cache whenever it
+                            // can.
                             cx.emit(WindowChanged);
                         }
                         cx.notify();

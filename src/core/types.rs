@@ -134,7 +134,7 @@ pub struct ModelAggregate {
 }
 
 /// Time window for filtering historical data
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TimeWindow {
     Last7Days,
     Last30Days,

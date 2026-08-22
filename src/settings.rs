@@ -36,16 +36,17 @@ const MODEL_ROWS_MAX: usize = 100;
 /// How often the app rescans on its own while its window is open.
 ///
 /// A scan re-reads every transcript that could fall in the selected range, so
-/// the options are deliberately coarse minutes rather than seconds: this keeps
-/// the numbers roughly current, it is not a live feed. `Off` leaves scanning
-/// entirely to the refresh button, which works on every setting.
+/// the options are deliberately coarse — minutes up to a couple of hours:
+/// between scans the dashboard is served from the snapshot cache, this is what
+/// pulls it back up to date. `Off` leaves scanning entirely to the refresh
+/// button, which works on every setting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScanInterval {
     Off,
     FiveMinutes,
     FifteenMinutes,
-    ThirtyMinutes,
-    Hourly,
+    OneHour,
+    TwoHours,
 }
 
 impl ScanInterval {
@@ -53,8 +54,8 @@ impl ScanInterval {
         ScanInterval::Off,
         ScanInterval::FiveMinutes,
         ScanInterval::FifteenMinutes,
-        ScanInterval::ThirtyMinutes,
-        ScanInterval::Hourly,
+        ScanInterval::OneHour,
+        ScanInterval::TwoHours,
     ];
 
     pub fn label(&self) -> &'static str {
@@ -62,19 +63,23 @@ impl ScanInterval {
             ScanInterval::Off => "Off",
             ScanInterval::FiveMinutes => "5 min",
             ScanInterval::FifteenMinutes => "15 min",
-            ScanInterval::ThirtyMinutes => "30 min",
-            ScanInterval::Hourly => "1 hour",
+            ScanInterval::OneHour => "1 hour",
+            ScanInterval::TwoHours => "2 hours",
         }
     }
 
     /// The stable name written to the settings file.
+    ///
+    /// `1h` predates the current option list and kept its meaning; the `30m`
+    /// it once sat beside is gone, and files carrying it fall back to the
+    /// shipped default like any other unrecognised value.
     pub fn key(&self) -> &'static str {
         match self {
             ScanInterval::Off => "off",
             ScanInterval::FiveMinutes => "5m",
             ScanInterval::FifteenMinutes => "15m",
-            ScanInterval::ThirtyMinutes => "30m",
-            ScanInterval::Hourly => "1h",
+            ScanInterval::OneHour => "1h",
+            ScanInterval::TwoHours => "2h",
         }
     }
 
@@ -86,14 +91,14 @@ impl ScanInterval {
     /// off. The one place that distinction is decided, so a caller spawns a
     /// timer or doesn't rather than matching on the variants itself.
     pub fn duration(&self) -> Option<Duration> {
-        let minutes = match self {
+        let seconds = match self {
             ScanInterval::Off => return None,
-            ScanInterval::FiveMinutes => 5,
-            ScanInterval::FifteenMinutes => 15,
-            ScanInterval::ThirtyMinutes => 30,
-            ScanInterval::Hourly => 60,
+            ScanInterval::FiveMinutes => 5 * 60,
+            ScanInterval::FifteenMinutes => 15 * 60,
+            ScanInterval::OneHour => 60 * 60,
+            ScanInterval::TwoHours => 2 * 60 * 60,
         };
-        Some(Duration::from_secs(minutes * 60))
+        Some(Duration::from_secs(seconds))
     }
 }
 
@@ -479,7 +484,7 @@ mod tests {
             transparency: true,
             default_range: TimeWindow::PreviousMonth,
             scan_on_launch: false,
-            scan_interval: ScanInterval::Hourly,
+            scan_interval: ScanInterval::TwoHours,
             model_rows: 5,
             disabled_providers: vec![Provider::Kimi, Provider::Antigravity],
             check_for_updates: false,
@@ -653,8 +658,12 @@ mod tests {
             Some(Duration::from_secs(300))
         );
         assert_eq!(
-            ScanInterval::Hourly.duration(),
+            ScanInterval::OneHour.duration(),
             Some(Duration::from_secs(3600))
+        );
+        assert_eq!(
+            ScanInterval::TwoHours.duration(),
+            Some(Duration::from_secs(7200))
         );
 
         // Every other option must give the timer something to wait for, and

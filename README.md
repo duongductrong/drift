@@ -134,15 +134,17 @@ pill in the filter bar, narrow to one project from the pill beside it, switch be
 and tokens on the chart, and hover a bar for its breakdown. Turning a provider off in
 Settings removes it from the next scan entirely.
 
-Only the range costs a rescan. The project filter, the Daily/Monthly switch and the
-cost/tokens switch are all views over the scan already in hand: each scan works out what
-every project spent, so filtering to one re-renders the page without touching the disk.
+Only the range costs a scan, and rarely even that. The project filter, the Daily/Monthly
+switch and the cost/tokens switch are all views over the snapshot already in hand, and each
+range you look at is cached for the rest of the session — switching back is a memory swap
+rather than another read of every transcript. The disk is only touched when you ask (`⌘R`
+or the refresh button), when an automatic scan comes due, or on a range's first visit.
 
-An open window also rescans on its own every 15 minutes; Settings → Scanning offers 5, 15 or
-30 minutes, an hour, or Off. Automatic scans leave the dashboard on screen rather than
-showing the skeleton, and the interval is counted from the last scan, so pressing `⌘R`
-postpones the next one instead of being followed by a second. The refresh button works on
-every setting, `Off` included.
+An open window also rescans on its own; Settings → Scanning offers 5 or 15 minutes, an
+hour, two hours, or Off. Automatic scans leave the dashboard on screen rather than showing
+the skeleton, and the interval is counted from the last scan, so pressing `⌘R` postpones
+the next one instead of being followed by a second. The refresh button works on every
+setting, `Off` included.
 
 | Shortcut | Action |
 | --- | --- |
