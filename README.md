@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/banner.png" alt="Mole — local usage dashboard for AI coding agents" width="100%">
+  <img src="assets/banner.webp" alt="Mole — local usage dashboard for AI coding agents" width="100%">
 </p>
 
 <p align="center">
