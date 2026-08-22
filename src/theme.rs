@@ -32,6 +32,10 @@ pub struct Theme {
     // Surfaces
     pub canvas: Hsla,
     pub surface: Hsla,
+    /// Solid backing for anything that floats above the app — dropdown menus,
+    /// tooltips, modal sheets. Always opaque, even with transparency on: the
+    /// glass belongs to the window itself, not to chrome hovering over it.
+    pub panel: Hsla,
     pub overlay: Hsla,
     pub overlay_strong: Hsla,
     /// Dimmed wash behind a modal sheet.
@@ -99,6 +103,7 @@ impl Theme {
         Self {
             canvas: rgb(0x1A1A1A).into(),
             surface: rgb(0x1A1A1A).into(),
+            panel: rgb(0x1A1A1A).into(),
             overlay: hsla(220.0 / 360.0, 0.10, 0.90, 0.05),
             overlay_strong: hsla(220.0 / 360.0, 0.10, 0.90, 0.09),
             scrim: hsla(220.0 / 360.0, 0.10, 0.06, 0.55),
@@ -134,6 +139,7 @@ impl Theme {
         Self {
             canvas: rgb(0xF6F5F6).into(),
             surface: rgb(0xF6F5F6).into(),
+            panel: rgb(0xF6F5F6).into(),
             overlay: hsla(220.0 / 360.0, 0.10, 0.12, 0.05),
             overlay_strong: hsla(220.0 / 360.0, 0.10, 0.12, 0.09),
             scrim: hsla(220.0 / 360.0, 0.10, 0.20, 0.28),
@@ -174,20 +180,65 @@ fn system_is_dark(cx: &App) -> bool {
     )
 }
 
-/// The palette `mode` asks for, with `System` resolved against the OS.
-pub fn resolve(mode: ThemeMode, cx: &App) -> Theme {
+// ---------------------------------------------------------------------------
+// Glass — what the transparency setting does to the palette.
+//
+// GPUI's macOS blur is a *colorless* material (`NSVisualEffectMaterial::Selection`),
+// so every bit of tint a native vibrancy window carries has to come from what we
+// paint over it. These are that tint's terms, matched to how Apple's own window
+// materials read: dark glass sits near four-fifths opaque, while light glass
+// must hold more of itself — pale washes lose text contrast over a bright
+// backdrop far faster than dark ones do.
+// ---------------------------------------------------------------------------
+
+/// How much of itself each base surface keeps when the desktop shows through.
+const GLASS_SURFACE_ALPHA_DARK: f32 = 0.78;
+const GLASS_SURFACE_ALPHA_LIGHT: f32 = 0.87;
+
+/// Hairline separators tuned against an opaque canvas sink into view once the
+/// backdrop moves behind them, so they get proportionally stronger too — the
+/// way native vibrant surfaces always carry crisper rules than flat ones.
+const GLASS_BORDER_BOOST: f32 = 1.5;
+/// Ceiling on that boost, so a strong border never outshouts the content it
+/// separates.
+const GLASS_BORDER_MAX_ALPHA: f32 = 0.32;
+
+impl Theme {
+    /// Open `canvas` and `surface` up to the window backdrop and re-weight the
+    /// hairlines, leaving every other color as-is: overlays and scrims are
+    /// already translucent washes drawn *over* these surfaces, so they inherit
+    /// the effect without being touched — and [`Theme::panel`] keeps its full
+    /// opacity by design, since floating chrome must not go glassy with it.
+    fn with_transparent_surfaces(mut self, is_dark: bool) -> Self {
+        self.canvas.a = if is_dark {
+            GLASS_SURFACE_ALPHA_DARK
+        } else {
+            GLASS_SURFACE_ALPHA_LIGHT
+        };
+        self.surface.a = self.canvas.a;
+        self.border.a = (self.border.a * GLASS_BORDER_BOOST).min(GLASS_BORDER_MAX_ALPHA);
+        self.border_strong.a =
+            (self.border_strong.a * GLASS_BORDER_BOOST).min(GLASS_BORDER_MAX_ALPHA);
+        self
+    }
+}
+
+/// The palette `mode` asks for, with `System` resolved against the OS and
+/// `transparent` deciding whether the base surfaces show the backdrop through.
+pub fn resolve(mode: ThemeMode, transparent: bool, cx: &App) -> Theme {
     let is_dark = match mode {
         ThemeMode::System => system_is_dark(cx),
         ThemeMode::Light => false,
         ThemeMode::Dark => true,
     };
-    if is_dark { Theme::dark() } else { Theme::light() }
+    let theme = if is_dark { Theme::dark() } else { Theme::light() };
+    if transparent { theme.with_transparent_surfaces(is_dark) } else { theme }
 }
 
 /// Publish the palette for `mode`. Call once before opening a window, and again
 /// whenever the preference changes — every view reads the published palette via
 /// [`Theme::current`], so republishing is all a theme switch takes.
-pub fn apply(cx: &mut App, mode: ThemeMode) {
-    let theme = resolve(mode, cx);
+pub fn apply(cx: &mut App, mode: ThemeMode, transparent: bool) {
+    let theme = resolve(mode, transparent, cx);
     cx.set_global(ActiveTheme(theme));
 }

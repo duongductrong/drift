@@ -4,15 +4,13 @@ mod settings;
 mod theme;
 mod ui;
 
-use gpui::{
-    prelude::*, px, size, App, Bounds, TitlebarOptions, WindowBackgroundAppearance, WindowBounds,
-    WindowOptions,
-};
+use gpui::{prelude::*, px, size, App, Bounds, TitlebarOptions, WindowBounds, WindowOptions};
 
 fn main() {
     gpui_platform::application().run(|cx: &mut App| {
-        // Publishes both the settings and the theme they select.
-        settings::init(cx);
+        // Publishes both the settings and the theme they select. The returned
+        // values shape the window below, so this runs before it opens.
+        let settings = settings::init(cx);
         // Actions, their key bindings, and the macOS menu bar. Before the
         // window opens, so the first frame already has them.
         keymap::init(cx);
@@ -37,11 +35,10 @@ fn main() {
                 // titlebar drags (which would otherwise delay clicks in the
                 // toolbar while it disambiguates double-clicks).
                 app_owns_titlebar_drag: cfg!(target_os = "macos"),
-                window_background: if cfg!(target_os = "macos") {
-                    WindowBackgroundAppearance::Blurred
-                } else {
-                    WindowBackgroundAppearance::Opaque
-                },
+                // Blurred only where the platform has a backdrop to blur and
+                // the user asked for it; the painted surfaces go translucent
+                // with it. See `settings::window_background`.
+                window_background: settings::window_background(settings.transparency),
                 window_min_size: Some(size(px(640.0), px(400.0))),
                 ..Default::default()
             },

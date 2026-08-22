@@ -22,7 +22,7 @@ fn card(theme: &Theme) -> Div {
         .px(px(7.0))
         .py(px(5.0))
         .rounded(px(5.0))
-        .bg(theme.canvas)
+        .bg(theme.panel)
         .border_1()
         .border_color(theme.border_strong)
         .shadow_md()

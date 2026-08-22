@@ -301,7 +301,10 @@ impl RenderOnce for SettingsDialog {
             // The sidebar's wash runs to the sheet's edge, so the corners have
             // to clip it or it squares them off.
             .overflow_hidden()
-            .bg(theme.canvas)
+            // The sheet floats over the app on a scrim, so it paints with the
+            // opaque `panel`: the transparency setting is for the window
+            // background, not for chrome hovering above it.
+            .bg(theme.panel)
             .border_1()
             .border_color(theme.border_strong)
             .shadow_lg()

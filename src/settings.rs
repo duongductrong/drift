@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use gpui::{App, Global};
+use gpui::{App, Global, WindowBackgroundAppearance};
 use serde::{Deserialize, Serialize};
 
 use crate::core::types::{Provider, TimeWindow};
@@ -100,6 +100,9 @@ impl ScanInterval {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
     pub theme: ThemeMode,
+    /// Whether the window backdrop (blurred desktop on macOS) shows through
+    /// the painted surfaces. See [`window_background`].
+    pub transparency: bool,
     /// The range the dashboard opens on.
     pub default_range: TimeWindow,
     /// Whether opening the app immediately scans, or waits to be asked.
@@ -127,6 +130,9 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             theme: ThemeMode::System,
+            // Off by default: the opaque window is the look the app shipped
+            // with, and glass is a taste rather than an assumption.
+            transparency: false,
             default_range: TimeWindow::Last30Days,
             scan_on_launch: true,
             // Frequent enough that a window left open is never far out of
@@ -180,6 +186,7 @@ impl Settings {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SettingsChange {
     Theme(ThemeMode),
+    Transparency(bool),
     DefaultRange(TimeWindow),
     ScanOnLaunch(bool),
     ScanInterval(ScanInterval),
@@ -194,6 +201,7 @@ impl SettingsChange {
     fn apply_to(self, settings: &mut Settings) {
         match self {
             SettingsChange::Theme(mode) => settings.theme = mode,
+            SettingsChange::Transparency(enabled) => settings.transparency = enabled,
             SettingsChange::DefaultRange(range) => settings.default_range = range,
             SettingsChange::ScanOnLaunch(enabled) => settings.scan_on_launch = enabled,
             SettingsChange::ScanInterval(interval) => settings.scan_interval = interval,
@@ -222,6 +230,7 @@ impl SettingsChange {
         match self {
             SettingsChange::ToggleProvider(_) | SettingsChange::RestoreDefaults => true,
             SettingsChange::Theme(_)
+            | SettingsChange::Transparency(_)
             | SettingsChange::DefaultRange(_)
             | SettingsChange::ScanOnLaunch(_)
             | SettingsChange::ScanInterval(_)
@@ -244,11 +253,26 @@ struct ActiveSettings(Settings);
 
 impl Global for ActiveSettings {}
 
+/// The platform window appearance the current preference asks for.
+///
+/// Transparency is delivered as the macOS blurred-backdrop material — plain
+/// cut-out transparency would show whatever happens to be behind the window,
+/// which is rarely what anyone wants from a dashboard. Elsewhere the app has
+/// always painted an opaque window, and stays opaque until a backdrop exists
+/// to show through.
+pub fn window_background(transparency_enabled: bool) -> WindowBackgroundAppearance {
+    if cfg!(target_os = "macos") && transparency_enabled {
+        WindowBackgroundAppearance::Blurred
+    } else {
+        WindowBackgroundAppearance::Opaque
+    }
+}
+
 /// Load the settings from disk, publish them, and paint the theme they ask for.
 /// Call once from `main` before opening any window.
 pub fn init(cx: &mut App) -> Settings {
     let settings = load();
-    theme::apply(cx, settings.theme);
+    theme::apply(cx, settings.theme, settings.transparency);
     cx.set_global(ActiveSettings(settings.clone()));
     settings
 }
@@ -259,14 +283,29 @@ pub fn update(cx: &mut App, change: SettingsChange) -> bool {
     let mut settings = Settings::current(cx);
     change.apply_to(&mut settings);
 
-    theme::apply(cx, settings.theme);
+    theme::apply(cx, settings.theme, settings.transparency);
     save(&settings);
     cx.set_global(ActiveSettings(settings));
+    sync_window_backdrops(cx);
     // Views hold no settings of their own, so a repaint is what makes the
     // change visible — including a theme switch, which no view is watching.
     cx.refresh_windows();
 
     change.requires_rescan()
+}
+
+/// Bring every open window's platform backdrop in line with the published
+/// setting. Windows opened later read the same answer through
+/// [`window_background`] in `main`, so this is only about live switches —
+/// there is nothing to update before the first window exists.
+fn sync_window_backdrops(cx: &mut App) {
+    let background = window_background(Settings::current(cx).transparency);
+    for handle in cx.windows() {
+        // A window mid-close fails its update; that is fine, it is gone.
+        let _ = handle.update(cx, |_view, window, _cx| {
+            window.set_background_appearance(background);
+        });
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -282,6 +321,8 @@ pub fn update(cx: &mut App, change: SettingsChange) -> bool {
 struct StoredSettings {
     #[serde(default)]
     theme: String,
+    #[serde(default)]
+    transparency: Option<bool>,
     #[serde(default)]
     default_range: String,
     #[serde(default)]
@@ -302,6 +343,7 @@ impl StoredSettings {
     fn from_settings(settings: &Settings) -> Self {
         Self {
             theme: theme_key(settings.theme).to_owned(),
+            transparency: Some(settings.transparency),
             default_range: range_key(settings.default_range).to_owned(),
             scan_on_launch: Some(settings.scan_on_launch),
             scan_interval: settings.scan_interval.key().to_owned(),
@@ -320,6 +362,7 @@ impl StoredSettings {
         let defaults = Settings::default();
         Settings {
             theme: theme_from_key(&self.theme).unwrap_or(defaults.theme),
+            transparency: self.transparency.unwrap_or(defaults.transparency),
             default_range: range_from_key(&self.default_range).unwrap_or(defaults.default_range),
             scan_on_launch: self.scan_on_launch.unwrap_or(defaults.scan_on_launch),
             scan_interval: ScanInterval::from_key(&self.scan_interval)
@@ -433,6 +476,7 @@ mod tests {
     fn every_field_survives_a_trip_through_the_file() {
         let settings = Settings {
             theme: ThemeMode::Light,
+            transparency: true,
             default_range: TimeWindow::PreviousMonth,
             scan_on_launch: false,
             scan_interval: ScanInterval::Hourly,
@@ -521,6 +565,14 @@ mod tests {
     }
 
     #[test]
+    fn an_older_file_without_the_transparency_key_keeps_the_window_opaque() {
+        // The key arrived after the first release too, so an existing file has
+        // no opinion about it — and must not turn the glass on by itself.
+        let stored: StoredSettings = serde_json::from_str(r#"{"theme":"dark"}"#).unwrap();
+        assert!(!stored.into_settings().transparency);
+    }
+
+    #[test]
     fn an_unknown_channel_falls_back_rather_than_opting_into_betas() {
         let stored: StoredSettings =
             serde_json::from_str(r#"{"update_channel":"nightly"}"#).unwrap();
@@ -540,6 +592,7 @@ mod tests {
         assert!(SettingsChange::RestoreDefaults.requires_rescan());
 
         assert!(!SettingsChange::Theme(ThemeMode::Dark).requires_rescan());
+        assert!(!SettingsChange::Transparency(true).requires_rescan());
         assert!(!SettingsChange::ModelRows(5).requires_rescan());
         assert!(!SettingsChange::ScanOnLaunch(false).requires_rescan());
         assert!(!SettingsChange::ScanInterval(ScanInterval::Off).requires_rescan());
@@ -631,6 +684,7 @@ mod tests {
     fn restoring_defaults_clears_every_edit() {
         let mut settings = Settings {
             theme: ThemeMode::Dark,
+            transparency: true,
             default_range: TimeWindow::Last7Days,
             scan_on_launch: false,
             scan_interval: ScanInterval::Off,

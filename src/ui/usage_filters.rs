@@ -229,6 +229,9 @@ fn trigger(
 }
 
 /// The shared menu surface: a bordered card that hangs off its trigger.
+///
+// Painted with `panel` rather than `canvas` so the transparency setting never
+// makes a menu see-through — it floats over the app, it is not the app.
 fn menu_surface(id: &'static str, width: f32, theme: &Theme) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
@@ -236,7 +239,7 @@ fn menu_surface(id: &'static str, width: f32, theme: &Theme) -> gpui::Stateful<g
         .w(px(width))
         .p(px(4.0))
         .rounded(px(8.0))
-        .bg(theme.canvas)
+        .bg(theme.panel)
         .border_1()
         .border_color(theme.border_strong)
         .shadow_md()
