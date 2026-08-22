@@ -186,6 +186,8 @@ src/
   ui/         GPUI views and components
     app_view.rs   root view, scan orchestration, dialog focus
     dashboard.rs  the page: filters, stats, chart, breakdowns
+    settings_dialog/  the settings sheet: sidebar, and one pane module per
+                      category under panes/
   settings.rs persisted preferences, published as a GPUI global
   theme.rs    light/dark palettes and provider colors
   keymap.rs   actions, key bindings, macOS menu bar

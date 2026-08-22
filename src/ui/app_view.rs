@@ -10,7 +10,7 @@ use crate::settings::{self, Settings, SettingsChange};
 use super::components::{Button, IconButton};
 use super::dashboard::{Dashboard, WindowChanged};
 use super::icons::Icon;
-use super::settings_dialog::SettingsDialog;
+use super::settings_dialog::{SettingsCategory, SettingsDialog};
 use super::title_bar::Toolbar;
 
 /// How long after launch the update check runs.
@@ -33,6 +33,11 @@ const AUTO_SCAN_MIN_WAIT: std::time::Duration = std::time::Duration::from_secs(5
 pub struct AppView {
     dashboard: Entity<Dashboard>,
     settings_open: bool,
+    /// Which settings category the dialog's sidebar has selected. Held here
+    /// rather than in the dialog — which is rebuilt on every frame and gone
+    /// between openings — so the pane survives both, and so the dialog stays a
+    /// pure view of what it is handed.
+    settings_category: SettingsCategory,
     /// Result of the last update check — see `core::update`.
     update_state: CheckState,
     /// Holds focus whenever no dialog does. GPUI dispatches an action along
@@ -95,6 +100,7 @@ impl AppView {
         let mut this = Self {
             dashboard: dash,
             settings_open: false,
+            settings_category: SettingsCategory::default(),
             update_state: CheckState::Idle,
             focus,
             settings_focus: cx.focus_handle(),
@@ -220,6 +226,11 @@ impl AppView {
         // would strand focus off the dispatch path and take every shortcut
         // down with it.
         window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    fn select_settings_category(&mut self, category: SettingsCategory, cx: &mut Context<Self>) {
+        self.settings_category = category;
         cx.notify();
     }
 
@@ -361,6 +372,10 @@ impl Render for AppView {
                 this.close_settings(window, cx)
             });
 
+            let select = cx.listener(|this, category: &SettingsCategory, _window, cx| {
+                this.select_settings_category(*category, cx);
+            });
+
             let check = cx.listener(|this, _event: &(), _window: &mut Window, cx| {
                 this.start_update_check(cx)
             });
@@ -369,8 +384,10 @@ impl Render for AppView {
             });
 
             SettingsDialog::new(Settings::current(cx), self.settings_focus.clone())
+                .category(self.settings_category)
                 .update_state(self.update_state.clone())
                 .on_change(move |c, window, cx| change(&c, window, cx))
+                .on_select_category(move |c, window, cx| select(&c, window, cx))
                 .on_check_updates(move |window, cx| check(&(), window, cx))
                 .on_download(move |window, cx| download(&(), window, cx))
                 .on_close(move |window, cx| close(&(), window, cx))

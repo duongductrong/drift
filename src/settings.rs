@@ -15,7 +15,7 @@ use crate::theme::{self, ThemeMode};
 // inputs as plain arguments, so a new setting is added here and threaded in at
 // the call site rather than reaching into the business logic. Adding one means
 // three edits — a field with a default, a `SettingsChange` variant, and a row
-// in `ui::settings_dialog`.
+// in whichever `ui::settings_dialog::panes` module owns that category.
 //
 // The live values are published as a GPUI global, mirroring `Theme`: any render
 // context reads them with `Settings::current(cx)`, and `update` republishes,

@@ -13,14 +13,18 @@ use super::tooltip::Tooltip;
 type ClickHandler = Arc<dyn Fn(&mut Window, &mut App) + Send + Sync>;
 
 // ---------------------------------------------------------------------------
-// Button — the app's full-size action button.
+// Button — the app's full-size action button, in four sizes.
 //
 // `Primary` is the filled, inverse-on-canvas style; `Subtle` is the same
-// geometry with no fill, for the secondary action sitting beside one.
+// geometry with no fill, for the secondary action sitting beside one. Size
+// scales only padding and type, so one component serves dense chrome — a
+// dialog footer, an action inside a setting row — as well as free-standing
+// calls to action.
 //
 // Usage:
 //   Button::new("done", "Done").on_click(|_window, _cx| { … })
 //   Button::new("reset", "Restore defaults").subtle().on_click(…)
+//   Button::new("check", "Check now").size(ButtonSize::Sm).on_click(…)
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -29,11 +33,43 @@ pub enum ButtonStyle {
     Subtle,
 }
 
+/// A button's geometry, by role rather than by point size: callers say where
+/// the button lives and the metrics follow.
+///
+/// The ladder is complete on purpose — every rung exists before anything
+/// climbs it — so picking a size never means extending this enum first.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ButtonSize {
+    /// Inside rows and other dense quarters, beside small text.
+    Xs,
+    /// Compact bars — a dialog footer, a secondary row action.
+    Sm,
+    #[default]
+    /// Free-standing calls to action.
+    Md,
+    /// Hero actions on sparse surfaces.
+    Lg,
+}
+
+impl ButtonSize {
+    /// Horizontal padding, vertical padding, text size, corner radius.
+    fn metrics(self) -> (f32, f32, f32, f32) {
+        match self {
+            ButtonSize::Xs => (9.0, 3.0, 10.0, 5.0),
+            ButtonSize::Sm => (11.0, 4.0, 11.0, 5.0),
+            ButtonSize::Md => (14.0, 6.0, 12.0, 6.0),
+            ButtonSize::Lg => (18.0, 8.0, 13.0, 7.0),
+        }
+    }
+}
+
 #[derive(IntoElement)]
 pub struct Button {
     id: SharedString,
     label: SharedString,
     style: ButtonStyle,
+    size: ButtonSize,
     on_click: Option<ClickHandler>,
 }
 
@@ -43,12 +79,18 @@ impl Button {
             id: id.into(),
             label: label.into(),
             style: ButtonStyle::Primary,
+            size: ButtonSize::default(),
             on_click: None,
         }
     }
 
     pub fn subtle(mut self) -> Self {
         self.style = ButtonStyle::Subtle;
+        self
+    }
+
+    pub fn size(mut self, size: ButtonSize) -> Self {
+        self.size = size;
         self
     }
 
@@ -65,14 +107,15 @@ impl RenderOnce for Button {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = Theme::current(cx);
         let on_click = self.on_click.clone();
+        let (pad_x, pad_y, text_size, radius) = self.size.metrics();
 
         div()
             .id(self.id)
             .flex_none()
-            .px(px(14.0))
-            .py(px(6.0))
-            .rounded(px(6.0))
-            .text_size(px(12.0))
+            .px(px(pad_x))
+            .py(px(pad_y))
+            .rounded(px(radius))
+            .text_size(px(text_size))
             .cursor_pointer()
             .map(|el| match self.style {
                 ButtonStyle::Primary => el
