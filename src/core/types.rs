@@ -75,6 +75,11 @@ pub struct UsageEvent {
     pub timestamp_ms: i64,
     pub model_name: String,
     pub session_key: String,
+    /// Absolute path of the directory the session ran in — the project the
+    /// work belongs to. Empty when the provider's records do not say, which
+    /// groups the event under [`UNKNOWN_PROJECT_LABEL`] rather than dropping
+    /// it from the totals.
+    pub project_path: String,
     pub tokens: TokenBreakdown,
     pub reported_cost: Option<f64>,
     pub dedup_id: Option<String>,
@@ -348,6 +353,23 @@ impl UsageMetric {
         }
     }
 
+    pub fn of_project(&self, project: &ProjectUsage) -> f64 {
+        match self {
+            UsageMetric::Cost => project.cost_usd,
+            UsageMetric::Tokens => project.total_tokens as f64,
+        }
+    }
+
+    /// A project's share of the range in this metric's terms — what ranks the
+    /// project menu, so switching the metric reorders it the same way it
+    /// reorders the provider and model lists.
+    pub fn share_of_project(&self, project: &ProjectUsage) -> f64 {
+        match self {
+            UsageMetric::Cost => project.cost_fraction,
+            UsageMetric::Tokens => project.token_fraction,
+        }
+    }
+
     pub fn of_model(&self, model: &ModelAggregate) -> f64 {
         match self {
             UsageMetric::Cost => model.cost_usd,
@@ -372,6 +394,24 @@ pub fn spans_multiple_months(start: NaiveDate, end: NaiveDate) -> bool {
     (start.year(), start.month()) != (end.year(), end.month())
 }
 
+/// Shown for events whose provider does not record a working directory.
+pub const UNKNOWN_PROJECT_LABEL: &str = "Unknown project";
+
+/// The name a project path goes by on screen: its last component, which is
+/// what the directory is called and what the user thinks of the project as.
+///
+/// Paths that share a leaf ("zlp/crm-platform-mf" and "old/crm-platform-mf")
+/// therefore read alike — the full path rides along as a tooltip wherever this
+/// is shown, so the short form never has to carry the disambiguation.
+pub fn project_label(path: &str) -> &str {
+    if path.is_empty() {
+        return UNKNOWN_PROJECT_LABEL;
+    }
+    path.rsplit('/')
+        .find(|segment| !segment.is_empty())
+        .unwrap_or(path)
+}
+
 /// The full snapshot of historical usage data
 #[derive(Clone, Debug)]
 pub struct UsageSnapshot {
@@ -386,7 +426,46 @@ pub struct UsageSnapshot {
     pub by_provider: Vec<ProviderSummary>,
     pub by_model: Vec<ModelAggregate>,
     pub daily: Vec<DailyAggregate>,
+    /// One entry per project the range touched, each carrying the whole page's
+    /// worth of data narrowed to that project. Ordered by cost, descending.
+    ///
+    /// Holding a full view per project is what makes the project filter a pure
+    /// view transform, like [`Granularity`]: selecting one swaps which
+    /// snapshot the page draws rather than costing a rescan.
+    pub by_project: Vec<ProjectUsage>,
     pub scan_time_ms: u64,
+}
+
+impl UsageSnapshot {
+    /// The view of this snapshot narrowed to one project, or `None` when the
+    /// range holds nothing for that path — which is what a filter left over
+    /// from a previous range looks like, and why callers fall back to the
+    /// unfiltered snapshot rather than showing an empty page.
+    pub fn project(&self, path: &str) -> Option<&ProjectUsage> {
+        self.by_project.iter().find(|p| p.path == path)
+    }
+}
+
+/// One project's slice of a snapshot.
+///
+/// `view` is a snapshot in its own right — same dates, same shape, only the
+/// events from this project — so every panel on the page reads it unchanged.
+/// Its own `by_project` is empty: the split has already happened by then.
+#[derive(Clone, Debug)]
+pub struct ProjectUsage {
+    /// Absolute path of the project directory; empty for unattributed usage.
+    pub path: String,
+    pub cost_usd: f64,
+    pub total_tokens: u64,
+    pub cost_fraction: f64,
+    pub token_fraction: f64,
+    pub view: UsageSnapshot,
+}
+
+impl ProjectUsage {
+    pub fn label(&self) -> &str {
+        project_label(&self.path)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -510,6 +589,99 @@ mod tests {
         assert_eq!(UsageMetric::Cost.share_of(&cheap), 0.1);
         assert_eq!(UsageMetric::Tokens.share_of(&cheap), 0.9);
         assert_eq!(UsageMetric::Cost.other(), UsageMetric::Tokens);
+    }
+
+    /// A snapshot with one project per (path, cost) pair, shares filled in.
+    fn snapshot_with_projects(projects: &[(&str, f64, u64)]) -> UsageSnapshot {
+        let cost_total: f64 = projects.iter().map(|(_, cost, _)| cost).sum();
+        let token_total: u64 = projects.iter().map(|(_, _, tokens)| tokens).sum();
+        let mut snapshot = empty_snapshot();
+        snapshot.cost_usd = cost_total;
+        snapshot.total_tokens = token_total;
+        snapshot.by_project = projects
+            .iter()
+            .map(|(path, cost, tokens)| ProjectUsage {
+                path: (*path).to_owned(),
+                cost_usd: *cost,
+                total_tokens: *tokens,
+                cost_fraction: if cost_total > 0.0 { cost / cost_total } else { 0.0 },
+                token_fraction: if token_total > 0 {
+                    *tokens as f64 / token_total as f64
+                } else {
+                    0.0
+                },
+                view: UsageSnapshot {
+                    cost_usd: *cost,
+                    total_tokens: *tokens,
+                    ..empty_snapshot()
+                },
+            })
+            .collect();
+        snapshot
+    }
+
+    fn empty_snapshot() -> UsageSnapshot {
+        UsageSnapshot {
+            start_date: "2026-08-01".parse().unwrap(),
+            end_date: "2026-08-31".parse().unwrap(),
+            tokens: TokenBreakdown::default(),
+            total_tokens: 0,
+            cost_usd: 0.0,
+            cache_savings_usd: 0.0,
+            event_count: 0,
+            session_count: 0,
+            by_provider: Vec::new(),
+            by_model: Vec::new(),
+            daily: Vec::new(),
+            by_project: Vec::new(),
+            scan_time_ms: 0,
+        }
+    }
+
+    #[test]
+    fn a_project_goes_by_the_last_component_of_its_path() {
+        assert_eq!(project_label("/Users/me/Developer/Snapzy"), "Snapzy");
+        // A trailing slash is not a nameless project.
+        assert_eq!(project_label("/Users/me/Developer/usage/"), "usage");
+        // Usage the provider could not attribute still has somewhere to go.
+        assert_eq!(project_label(""), UNKNOWN_PROJECT_LABEL);
+    }
+
+    #[test]
+    fn selecting_a_project_finds_the_view_scanned_for_it() {
+        let snapshot = snapshot_with_projects(&[("/w/a", 3.0, 300), ("/w/b", 1.0, 100)]);
+
+        let a = snapshot.project("/w/a").unwrap();
+        assert_eq!(a.label(), "a");
+        assert_eq!(a.view.cost_usd, 3.0);
+        // A path the range holds nothing for — a filter left over from another
+        // range — reports absent rather than empty.
+        assert!(snapshot.project("/w/never").is_none());
+    }
+
+    #[test]
+    fn a_project_ranks_differently_under_each_metric() {
+        // The same inversion the provider list shows: cheap-but-busy work is a
+        // rounding error on the bill and most of the tokens.
+        let snapshot = snapshot_with_projects(&[("/w/pricey", 9.0, 100), ("/w/busy", 1.0, 900)]);
+        let pricey = snapshot.project("/w/pricey").unwrap();
+        let busy = snapshot.project("/w/busy").unwrap();
+
+        assert!(UsageMetric::Cost.of_project(pricey) > UsageMetric::Cost.of_project(busy));
+        assert!(UsageMetric::Tokens.of_project(busy) > UsageMetric::Tokens.of_project(pricey));
+        assert_eq!(UsageMetric::Cost.share_of_project(busy), 0.1);
+        assert_eq!(UsageMetric::Tokens.share_of_project(busy), 0.9);
+    }
+
+    #[test]
+    fn project_shares_account_for_the_whole_range() {
+        let snapshot = snapshot_with_projects(&[("/w/a", 3.0, 300), ("/w/b", 1.0, 100)]);
+        let cost: f64 = snapshot
+            .by_project
+            .iter()
+            .map(|p| p.cost_fraction)
+            .sum();
+        assert!((cost - 1.0).abs() < 1e-9);
     }
 
     #[test]

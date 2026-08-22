@@ -6,7 +6,7 @@ use chrono::{DateTime, Local, NaiveDate, TimeZone, Utc};
 use serde_json::Value;
 
 use crate::core::types::{
-    DailyAggregate, ModelAggregate, Provider, ProviderSummary,
+    DailyAggregate, ModelAggregate, ProjectUsage, Provider, ProviderSummary,
     TimeWindow, TokenBreakdown, UsageEvent, UsageSnapshot,
 };
 use crate::core::pricing::{compute_cost, compute_cache_savings, PricingTable};
@@ -116,6 +116,22 @@ fn parse_timestamp_ms(value: Option<&Value>) -> Option<i64> {
     value.and_then(Value::as_i64)
 }
 
+/// Normalise a working directory into the key projects are grouped by.
+///
+/// Providers write the same directory in more than one shape — a `file://`
+/// URI, a trailing slash — and every variant that reaches the aggregator
+/// becomes a project of its own, splitting one project's cost across several
+/// menu entries. Anything unrecognisable collapses to the empty string, which
+/// groups as "Unknown project".
+fn project_key(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let path = trimmed
+        .strip_prefix("file://")
+        .unwrap_or(trimmed)
+        .trim_end_matches('/');
+    if path.is_empty() { String::new() } else { path.to_owned() }
+}
+
 /// Quick substring gate applied before JSON parsing. Transcripts are mostly
 /// tool output; skipping irrelevant lines before serde_json is ~10x faster.
 fn might_carry_usage(line: &str, provider: Provider) -> bool {
@@ -189,6 +205,10 @@ pub fn parse_claude_line(line: &str) -> Option<UsageEvent> {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned(),
+        // Every record carries the directory the turn ran in, so the project
+        // is read per event rather than per file — a session that moves
+        // between directories attributes each turn where it happened.
+        project_path: project_key(v.get("cwd").and_then(Value::as_str).unwrap_or_default()),
         tokens,
         reported_cost,
         dedup_id,
@@ -207,6 +227,10 @@ pub fn parse_claude_line(line: &str) -> Option<UsageEvent> {
 pub struct CodexParseState {
     pub current_model: String,
     pub current_session: String,
+    /// Working directory of the session, from `session_meta` and refreshed by
+    /// each `turn_context` — carried forward exactly like the model, so a
+    /// session that changes directory attributes from the change onward.
+    pub current_cwd: String,
     /// Serialised `last_token_usage` for consecutive duplicate suppression.
     pub last_usage_signature: Option<String>,
 }
@@ -227,11 +251,17 @@ pub fn parse_codex_line(line: &str, state: &mut CodexParseState) -> Option<Usage
             {
                 state.current_session = id.to_owned();
             }
+            if let Some(cwd) = payload.get("cwd").and_then(Value::as_str) {
+                state.current_cwd = project_key(cwd);
+            }
             return None;
         }
         Some("turn_context") => {
             if let Some(m) = payload.get("model").and_then(Value::as_str) {
                 state.current_model = m.to_owned();
+            }
+            if let Some(cwd) = payload.get("cwd").and_then(Value::as_str) {
+                state.current_cwd = project_key(cwd);
             }
             return None;
         }
@@ -288,6 +318,7 @@ pub fn parse_codex_line(line: &str, state: &mut CodexParseState) -> Option<Usage
         } else {
             state.current_session.clone()
         },
+        project_path: state.current_cwd.clone(),
         tokens,
         reported_cost: None,
         // Codex rollout files are per-session; no cross-file dedup needed.
@@ -305,6 +336,10 @@ pub fn parse_codex_line(line: &str, state: &mut CodexParseState) -> Option<Usage
 pub struct KimiParseState {
     pub current_model: String,
     pub session_key: String,
+    /// Working directory of the session. Kimi's wire log never names it, so
+    /// this is filled in from the session's `state.json` before the log is
+    /// read — see [`kimi_session_cwd`].
+    pub project_path: String,
 }
 
 /// Feeds one line of a Kimi wire.jsonl into `state`, returning a record when
@@ -373,10 +408,33 @@ pub fn parse_kimi_line(line: &str, state: &mut KimiParseState) -> Option<UsageEv
         timestamp_ms,
         model_name: state.current_model.clone(),
         session_key: state.session_key.clone(),
+        project_path: state.project_path.clone(),
         tokens,
         reported_cost: None,
         dedup_id,
     })
+}
+
+/// The directory a Kimi session ran in, read from the `state.json` beside its
+/// wire log.
+///
+/// The key moved between releases — older sessions write `workDir`, newer ones
+/// `cwd` — so both are accepted; a session recorded under the old name still
+/// lands on the same project as its newer siblings.
+fn kimi_session_cwd(session_dir: &Path) -> String {
+    let Ok(text) = fs::read_to_string(session_dir.join("state.json")) else {
+        return String::new();
+    };
+    let Ok(state) = serde_json::from_str::<Value>(&text) else {
+        return String::new();
+    };
+    project_key(
+        state
+            .get("cwd")
+            .or_else(|| state.get("workDir"))
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -404,6 +462,7 @@ fn read_transcript_records(path: &Path, provider: Provider) -> Option<Vec<UsageE
                 .and_then(|n| n.to_str())
                 .unwrap_or("unknown");
             kimi_state.session_key = session_name.to_owned();
+            kimi_state.project_path = kimi_session_cwd(session_dir);
         }
     }
 
@@ -490,9 +549,13 @@ fn scan_opencode(since_ms: i64) -> Vec<UsageEvent> {
     };
 
     let mut events = Vec::new();
-    let query = "SELECT id, session_id, time_created, data FROM message \
-                 WHERE json_extract(data, '$.role') = 'assistant' \
-                 AND time_created >= ?1";
+    // The directory lives on the session, not the message, so it is joined in
+    // rather than read per row: a message whose session has since been deleted
+    // still counts, as unattributed usage.
+    let query = "SELECT m.id, m.session_id, m.time_created, m.data, s.directory \
+                 FROM message m LEFT JOIN session s ON s.id = m.session_id \
+                 WHERE json_extract(m.data, '$.role') = 'assistant' \
+                 AND m.time_created >= ?1";
 
     let Ok(mut stmt) = conn.prepare(query) else {
         return events;
@@ -504,6 +567,7 @@ fn scan_opencode(since_ms: i64) -> Vec<UsageEvent> {
             row.get::<_, String>(1)?,
             row.get::<_, i64>(2)?,
             row.get::<_, String>(3)?,
+            row.get::<_, Option<String>>(4)?,
         ))
     });
 
@@ -512,7 +576,7 @@ fn scan_opencode(since_ms: i64) -> Vec<UsageEvent> {
     };
 
     for row in rows.flatten() {
-        let (msg_id, session_id, time_created, raw_data) = row;
+        let (msg_id, session_id, time_created, raw_data, directory) = row;
         let Ok(data) = serde_json::from_str::<Value>(&raw_data) else {
             continue;
         };
@@ -566,6 +630,7 @@ fn scan_opencode(since_ms: i64) -> Vec<UsageEvent> {
             timestamp_ms: time_created,
             model_name,
             session_key: session_id,
+            project_path: project_key(directory.as_deref().unwrap_or_default()),
             tokens,
             reported_cost,
             dedup_id: Some(msg_id),
@@ -720,6 +785,19 @@ fn scan_antigravity(since_ms: i64) -> Vec<UsageEvent> {
     all_events
 }
 
+/// The workspace a conversation was opened on, from `trajectory_metadata_blob`
+/// field 7 — a `file://` URI like "file:///Users/me/Developer/app".
+///
+/// This is the only place Antigravity records the project: the per-generation
+/// rows carry tokens and nothing about where they were spent, so the whole
+/// conversation is attributed to the one workspace it belongs to.
+fn extract_agy_workspace(data: &[u8]) -> Option<String> {
+    let fields = decode_pb_fields(data);
+    let uri = std::str::from_utf8(fields.get(&7)?.first()?.as_bytes()?).ok()?;
+    let key = project_key(uri);
+    (!key.is_empty()).then_some(key)
+}
+
 /// Extract the model name from an `executor_metadata` row's protobuf blob.
 /// Path: field 10 → field 1 → field 28 (string like "gemini-3-flash-agent")
 fn extract_agy_model_name(data: &[u8]) -> Option<String> {
@@ -765,6 +843,18 @@ fn read_antigravity_db(path: &Path, session_key: &str) -> Option<Vec<UsageEvent>
         }
     }
     let em_indices: Vec<i64> = model_entries.iter().map(|(idx, _)| *idx).collect();
+
+    // One workspace per conversation, read once and stamped on every event the
+    // file yields. A database written before the field existed simply reports
+    // no project.
+    let project_path = conn
+        .prepare("SELECT data FROM trajectory_metadata_blob")
+        .ok()
+        .and_then(|mut stmt| {
+            let rows = stmt.query_map([], |row| row.get::<_, Vec<u8>>(0)).ok()?;
+            rows.flatten().find_map(|data| extract_agy_workspace(&data))
+        })
+        .unwrap_or_default();
 
     let mut events = Vec::new();
 
@@ -894,6 +984,7 @@ fn read_antigravity_db(path: &Path, session_key: &str) -> Option<Vec<UsageEvent>
             timestamp_ms,
             model_name,
             session_key: session_key.to_owned(),
+            project_path: project_path.clone(),
             tokens,
             reported_cost: None,
             dedup_id,
@@ -972,17 +1063,107 @@ pub fn scan_all(
         unique_events.push(event);
     }
 
-    // ── Aggregate ──────────────────────────────────────────────────
+    // ── Aggregate, whole range then project by project ─────────────
+    //
+    // The per-project views are built from the same deduplicated events as the
+    // overall one, so a project's numbers are the overall numbers restricted to
+    // its rows — never a second, differently-filtered scan.
+    let mut snapshot = aggregate(
+        unique_events.iter().collect::<Vec<_>>().as_slice(),
+        start_date,
+        end_date,
+        pricing,
+    );
+    snapshot.by_project = aggregate_projects(&unique_events, start_date, end_date, pricing);
+
+    let scan_time_ms = start_time.elapsed().as_millis() as u64;
+    snapshot.scan_time_ms = scan_time_ms;
+    // The scan the page footer reports is the one that produced whatever view
+    // is on screen, so every project view quotes the same figure.
+    for project in &mut snapshot.by_project {
+        project.view.scan_time_ms = scan_time_ms;
+    }
+    snapshot
+}
+
+/// Split `events` by project and aggregate each group into a view of its own,
+/// ranked by cost like the provider and model lists.
+fn aggregate_projects(
+    events: &[UsageEvent],
+    start_date: NaiveDate,
+    end_date: NaiveDate,
+    pricing: &PricingTable,
+) -> Vec<ProjectUsage> {
+    // Grouped by reference: the events are already in hand, and a project view
+    // is built from the same rows the overall one counted.
+    let mut groups: HashMap<&str, Vec<&UsageEvent>> = HashMap::new();
+    for event in events {
+        groups
+            .entry(event.project_path.as_str())
+            .or_default()
+            .push(event);
+    }
+
+    let mut projects: Vec<ProjectUsage> = groups
+        .into_iter()
+        .map(|(path, group)| {
+            let view = aggregate(&group, start_date, end_date, pricing);
+            ProjectUsage {
+                path: path.to_owned(),
+                cost_usd: view.cost_usd,
+                total_tokens: view.total_tokens,
+                cost_fraction: 0.0,
+                token_fraction: 0.0,
+                view,
+            }
+        })
+        .collect();
+
+    // Shares are taken against the sum of the projects rather than against the
+    // overall snapshot: the two are the same total, and reading it from here
+    // keeps this function answerable on its own.
+    let cost_total: f64 = projects.iter().map(|p| p.cost_usd).sum();
+    let token_total: u64 = projects.iter().map(|p| p.total_tokens).sum();
+    for project in &mut projects {
+        if cost_total > 0.0 {
+            project.cost_fraction = project.cost_usd / cost_total;
+        }
+        if token_total > 0 {
+            project.token_fraction = project.total_tokens as f64 / token_total as f64;
+        }
+    }
+
+    projects.sort_by(|a, b| {
+        b.cost_usd
+            .partial_cmp(&a.cost_usd)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(b.total_tokens.cmp(&a.total_tokens))
+    });
+    projects
+}
+
+/// Roll `events` up into a snapshot covering `start_date..=end_date`.
+///
+/// Pure over the events it is handed, which is what lets the same code produce
+/// the overall view and each project's: the caller decides which rows belong,
+/// and nothing here reads the disk or the clock. Leaves `by_project` empty and
+/// `scan_time_ms` zero for the caller to fill in.
+fn aggregate(
+    events: &[&UsageEvent],
+    start_date: NaiveDate,
+    end_date: NaiveDate,
+    pricing: &PricingTable,
+) -> UsageSnapshot {
     let mut total_tokens: u64 = 0;
     let mut global_tokens = TokenBreakdown::default();
     let mut total_cost = 0.0;
     let mut total_cache_savings = 0.0;
-    let mut session_keys: HashSet<String> = HashSet::new();
+    let mut session_keys: HashSet<&str> = HashSet::new();
 
     let mut daily_map: HashMap<NaiveDate, DailyAggregate> = HashMap::new();
-    let mut model_map: HashMap<(Provider, String), ModelAggregate> = HashMap::new();
+    let mut model_map: HashMap<(Provider, &str), ModelAggregate> = HashMap::new();
 
-    for event in &unique_events {
+    for event in events {
         // Convert to local timezone date for day grouping
         let date = DateTime::from_timestamp_millis(event.timestamp_ms)
             .unwrap_or_default()
@@ -1008,7 +1189,7 @@ pub fn scan_all(
         global_tokens.add(&event.tokens);
         total_cost += cost;
         total_cache_savings += cache_savings;
-        session_keys.insert(event.session_key.clone());
+        session_keys.insert(event.session_key.as_str());
 
         let daily = daily_map.entry(date).or_insert_with(|| DailyAggregate {
             date,
@@ -1022,7 +1203,7 @@ pub fn scan_all(
         daily.by_provider[provider_idx].cost_usd += cost;
 
         let model_agg = model_map
-            .entry((event.provider, event.model_name.clone()))
+            .entry((event.provider, event.model_name.as_str()))
             .or_insert_with(|| ModelAggregate {
                 provider: event.provider,
                 model_name: event.model_name.clone(),
@@ -1110,11 +1291,175 @@ pub fn scan_all(
         total_tokens,
         cost_usd: total_cost,
         cache_savings_usd: total_cache_savings,
-        event_count: unique_events.len() as u64,
+        event_count: events.len() as u64,
         session_count: session_keys.len() as u64,
         by_provider,
         by_model,
         daily,
-        scan_time_ms: start_time.elapsed().as_millis() as u64,
+        by_project: Vec::new(),
+        scan_time_ms: 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn event(project: &str, cost: f64, tokens: u64, session: &str) -> UsageEvent {
+        UsageEvent {
+            provider: Provider::Claude,
+            // 2026-08-10T12:00:00Z, comfortably inside the test range.
+            timestamp_ms: 1_786_708_800_000,
+            model_name: "test-model".to_owned(),
+            session_key: session.to_owned(),
+            project_path: project.to_owned(),
+            tokens: TokenBreakdown {
+                fresh_input: tokens,
+                ..Default::default()
+            },
+            reported_cost: Some(cost),
+            dedup_id: None,
+        }
+    }
+
+    fn test_range() -> (NaiveDate, NaiveDate) {
+        (
+            "2026-08-01".parse().unwrap(),
+            "2026-08-31".parse().unwrap(),
+        )
+    }
+
+    #[test]
+    fn one_directory_written_several_ways_is_one_project() {
+        // Antigravity reports a URI, the rest report a path, and a trailing
+        // slash comes and goes — all the same project.
+        assert_eq!(project_key("file:///Users/me/app"), "/Users/me/app");
+        assert_eq!(project_key("/Users/me/app/"), "/Users/me/app");
+        assert_eq!(project_key("  /Users/me/app  "), "/Users/me/app");
+        // Nothing usable groups as unattributed rather than as a project
+        // named after a stray separator.
+        assert!(project_key("").is_empty());
+        assert!(project_key("/").is_empty());
+        assert!(project_key("file://").is_empty());
+    }
+
+    #[test]
+    fn a_claude_record_is_attributed_to_the_directory_it_ran_in() {
+        let line = r#"{"type":"assistant","timestamp":"2026-08-10T12:00:00.000Z",
+            "cwd":"/Users/me/Developer/app","sessionId":"s1","requestId":"r1",
+            "message":{"id":"m1","model":"claude-opus-5",
+            "usage":{"input_tokens":10,"output_tokens":5}}}"#;
+        let event = parse_claude_line(line).unwrap();
+        assert_eq!(event.project_path, "/Users/me/Developer/app");
+    }
+
+    #[test]
+    fn a_claude_record_without_a_directory_still_counts() {
+        let line = r#"{"type":"assistant","timestamp":"2026-08-10T12:00:00.000Z",
+            "sessionId":"s1","requestId":"r1","message":{"id":"m1",
+            "model":"claude-opus-5","usage":{"input_tokens":10,"output_tokens":5}}}"#;
+        let event = parse_claude_line(line).unwrap();
+        assert!(event.project_path.is_empty());
+        assert_eq!(event.tokens.total(), 15);
+    }
+
+    #[test]
+    fn codex_carries_the_directory_forward_and_follows_it_when_it_moves() {
+        let mut state = CodexParseState::default();
+
+        // The session's directory arrives on session_meta, before any usage.
+        assert!(parse_codex_line(
+            r#"{"type":"session_meta","timestamp":"2026-08-10T12:00:00Z",
+                "payload":{"id":"s1","cwd":"/Users/me/first"}}"#,
+            &mut state
+        )
+        .is_none());
+        assert!(parse_codex_line(
+            r#"{"type":"turn_context","timestamp":"2026-08-10T12:00:00Z",
+                "payload":{"model":"gpt-5.6","cwd":"/Users/me/first"}}"#,
+            &mut state
+        )
+        .is_none());
+
+        let usage = r#"{"type":"event_msg","timestamp":"2026-08-10T12:00:01Z",
+            "payload":{"type":"token_count","info":{"last_token_usage":
+            {"input_tokens":100,"output_tokens":20}}}}"#;
+        let first = parse_codex_line(usage, &mut state).unwrap();
+        assert_eq!(first.project_path, "/Users/me/first");
+
+        // A turn in another directory attributes from the move onward, the
+        // same way a mid-session model switch does.
+        parse_codex_line(
+            r#"{"type":"turn_context","timestamp":"2026-08-10T13:00:00Z",
+                "payload":{"model":"gpt-5.6","cwd":"/Users/me/second"}}"#,
+            &mut state,
+        );
+        let moved = parse_codex_line(
+            r#"{"type":"event_msg","timestamp":"2026-08-10T13:00:01Z",
+            "payload":{"type":"token_count","info":{"last_token_usage":
+            {"input_tokens":300,"output_tokens":40}}}}"#,
+            &mut state,
+        )
+        .unwrap();
+        assert_eq!(moved.project_path, "/Users/me/second");
+    }
+
+    #[test]
+    fn a_project_view_is_the_range_restricted_to_its_own_rows() {
+        let (start, end) = test_range();
+        let pricing = PricingTable::builtin();
+        let events = vec![
+            event("/w/a", 3.0, 300, "s1"),
+            event("/w/a", 1.0, 100, "s1"),
+            event("/w/b", 2.0, 200, "s2"),
+        ];
+
+        let projects = aggregate_projects(&events, start, end, &pricing);
+        assert_eq!(projects.len(), 2);
+
+        // Ranked by cost, like the provider and model lists.
+        assert_eq!(projects[0].path, "/w/a");
+        assert_eq!(projects[0].cost_usd, 4.0);
+        assert_eq!(projects[0].total_tokens, 400);
+        // Two events, one session — counted within the project, not across it.
+        assert_eq!(projects[0].view.event_count, 2);
+        assert_eq!(projects[0].view.session_count, 1);
+        // The view is a snapshot in its own right: same dates, full daily
+        // series, and no further split inside it.
+        assert_eq!(projects[0].view.start_date, start);
+        assert_eq!(projects[0].view.daily.len(), 31);
+        assert!(projects[0].view.by_project.is_empty());
+    }
+
+    #[test]
+    fn the_projects_add_back_up_to_the_range() {
+        let (start, end) = test_range();
+        let pricing = PricingTable::builtin();
+        let events = vec![
+            event("/w/a", 3.0, 300, "s1"),
+            event("/w/b", 2.0, 200, "s2"),
+            // Usage the provider could not attribute is a project of its own
+            // rather than a hole in the totals.
+            event("", 1.0, 100, "s3"),
+        ];
+
+        let overall = aggregate(&events.iter().collect::<Vec<_>>(), start, end, &pricing);
+        let projects = aggregate_projects(&events, start, end, &pricing);
+
+        assert_eq!(projects.len(), 3);
+        let cost: f64 = projects.iter().map(|p| p.cost_usd).sum();
+        let tokens: u64 = projects.iter().map(|p| p.total_tokens).sum();
+        assert!((cost - overall.cost_usd).abs() < 1e-9);
+        assert_eq!(tokens, overall.total_tokens);
+
+        let shares: f64 = projects.iter().map(|p| p.cost_fraction).sum();
+        assert!((shares - 1.0).abs() < 1e-9);
+        assert!(projects.iter().any(|p| p.path.is_empty()));
+    }
+
+    #[test]
+    fn a_range_with_no_usage_has_no_projects_to_filter_by() {
+        let (start, end) = test_range();
+        assert!(aggregate_projects(&[], start, end, &PricingTable::builtin()).is_empty());
     }
 }

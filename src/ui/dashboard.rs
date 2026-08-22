@@ -1,6 +1,6 @@
 use gpui::{div, prelude::*, px, Context, SharedString, Window};
 use crate::core::types::{
-    spans_multiple_months, Granularity, TimeWindow, UsageMetric, UsageSnapshot,
+    spans_multiple_months, Granularity, ProjectUsage, TimeWindow, UsageMetric, UsageSnapshot,
 };
 use crate::settings::Settings;
 use crate::theme::Theme;
@@ -12,7 +12,7 @@ use super::provider_row::ProviderRow;
 use super::scroll_area::ScrollArea;
 use super::skeleton::render_dashboard_skeleton;
 use super::usage_chart::UsageChart;
-use super::usage_filters::UsageFilters;
+use super::usage_filters::{FilterMenu, ProjectOption, UsageFilters};
 
 /// Emitted when the user picks a different time window so the parent
 /// (`AppView`) can trigger a rescan. Carries no payload: the new window is
@@ -37,7 +37,13 @@ pub struct Dashboard {
     /// view choice over the snapshot already in hand, so switching it costs a
     /// re-render and nothing more.
     pub metric: UsageMetric,
-    pub range_menu_open: bool,
+    /// The project the page is narrowed to, by path; `None` counts every
+    /// project. Like `preferred_granularity` this is what the user asked for
+    /// rather than what is drawn — a range holding no usage for it falls back
+    /// to all projects without forgetting the choice.
+    pub preferred_project: Option<SharedString>,
+    /// Which filter dropdown is open, if any.
+    pub open_menu: Option<FilterMenu>,
     pub loading: bool,
 }
 
@@ -53,7 +59,10 @@ impl Dashboard {
             preferred_granularity: Granularity::Daily,
             // Cost leads: it is the question most people open the app with.
             metric: UsageMetric::Cost,
-            range_menu_open: false,
+            // Everything, until the user narrows it: the page's first job is
+            // the total across projects.
+            preferred_project: None,
+            open_menu: None,
             loading: false,
         }
     }
@@ -67,6 +76,19 @@ impl Dashboard {
         } else {
             Granularity::Daily
         }
+    }
+
+    /// The project view actually drawn: the preferred project's, or `None`
+    /// when no project is selected or the snapshot holds nothing for it.
+    ///
+    /// A filter set on one range can outlive the move to another that the
+    /// project has no usage in. Resolving here means the pill, the checkmark
+    /// and the numbers all agree on showing everything in that case, while the
+    /// preference survives for when the project comes back into range.
+    fn effective_project<'a>(&self, snapshot: &'a UsageSnapshot) -> Option<&'a ProjectUsage> {
+        self.preferred_project
+            .as_ref()
+            .and_then(|path| snapshot.project(path))
     }
 }
 
@@ -100,7 +122,17 @@ impl Render for Dashboard {
                 .into_any_element();
         }
 
-        let snap = self.snapshot.as_ref().unwrap();
+        let snapshot = self.snapshot.as_ref().unwrap();
+
+        // ── Project filter ─────────────────────────────────────────
+        //
+        // Narrowing to a project is a pure view transform, like granularity
+        // and the metric: the scan already produced a view per project, so the
+        // page below simply reads a different one. `snapshot` stays in hand for
+        // the menu, which has to list every project in the range regardless of
+        // which one is selected.
+        let selected_project = self.effective_project(snapshot);
+        let snap = selected_project.map(|p| &p.view).unwrap_or(snapshot);
 
         // ── Filter bar: range + aggregation, then what they resolve to ──
         //
@@ -114,27 +146,74 @@ impl Render for Dashboard {
         // Spells out the range → aggregation relationship in words, so the
         // pill above never has to be decoded: "these dates, one bar per day".
         let metric = self.metric;
-        let caption = format!(
+        let mut caption = format!(
             "{} – {} · one bar per {} · measured in {}",
             snap.start_date.format("%b %d"),
             snap.end_date.format("%b %d, %Y"),
             granularity.bucket_noun(),
             metric.label().to_lowercase(),
         );
+        // Under a filter the page's numbers are one project's, which says
+        // nothing about how much of the bill that project is. The share puts
+        // the narrowed view back in the context it was taken from.
+        if let Some(project) = selected_project {
+            caption.push_str(&format!(
+                " · {} of all projects",
+                format_percent(metric.share_of_project(project)),
+            ));
+        }
+
+        // Ranked by the selected metric, like every other list on the page, so
+        // the project doing the most damage is the one at the top of the menu.
+        let project_options: Vec<ProjectOption> = {
+            let mut ranked: Vec<&ProjectUsage> = snapshot.by_project.iter().collect();
+            ranked.sort_by(|a, b| {
+                metric
+                    .of_project(b)
+                    .partial_cmp(&metric.of_project(a))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            ranked
+                .into_iter()
+                .map(|project| ProjectOption {
+                    path: SharedString::from(project.path.clone()),
+                    label: SharedString::from(project.label().to_owned()),
+                    value: SharedString::from(format_metric(
+                        metric,
+                        metric.of_project(project),
+                    )),
+                })
+                .collect()
+        };
 
         let filters = {
             let weak = cx.entity().downgrade();
             let select_window = weak.clone();
             let select_granularity = weak.clone();
+            let select_project = weak.clone();
             let toggle_menu = weak.clone();
             let dismiss_menu = weak.clone();
 
             UsageFilters::new(self.selected_window, granularity)
                 .monthly_available(monthly_available)
-                .menu_open(self.range_menu_open)
+                .projects(project_options)
+                .selected_project(
+                    selected_project.map(|p| SharedString::from(p.path.clone())),
+                )
+                .all_projects_value(format_metric(metric, metric.of_snapshot(snapshot)))
+                .open_menu(self.open_menu)
+                .on_select_project(move |path, _window, cx| {
+                    let _ = select_project.update(cx, |this, cx| {
+                        this.open_menu = None;
+                        // Same events, narrower view: like granularity and the
+                        // metric, this never reaches the scanner.
+                        this.preferred_project = path;
+                        cx.notify();
+                    });
+                })
                 .on_select_window(move |tw, _window, cx| {
                     let _ = select_window.update(cx, |this, cx| {
-                        this.range_menu_open = false;
+                        this.open_menu = None;
                         if this.selected_window != tw {
                             this.selected_window = tw;
                             // A different range means different events: only
@@ -154,16 +233,22 @@ impl Render for Dashboard {
                         }
                     });
                 })
-                .on_toggle_menu(move |_window, cx| {
+                .on_toggle_menu(move |menu, _window, cx| {
                     let _ = toggle_menu.update(cx, |this, cx| {
-                        this.range_menu_open = !this.range_menu_open;
+                        // Pressing the open menu's own trigger closes it;
+                        // pressing the other one hands the dropdown over.
+                        this.open_menu = if this.open_menu == Some(menu) {
+                            None
+                        } else {
+                            Some(menu)
+                        };
                         cx.notify();
                     });
                 })
                 .on_dismiss_menu(move |_window, cx| {
                     let _ = dismiss_menu.update(cx, |this, cx| {
-                        if this.range_menu_open {
-                            this.range_menu_open = false;
+                        if this.open_menu.is_some() {
+                            this.open_menu = None;
                             cx.notify();
                         }
                     });
@@ -417,6 +502,79 @@ mod tests {
     #[test]
     fn the_view_opens_measured_in_cost() {
         assert_eq!(Dashboard::new(TimeWindow::Last30Days).metric, UsageMetric::Cost);
+    }
+
+    fn snapshot_with_project(path: &str) -> UsageSnapshot {
+        let empty = UsageSnapshot {
+            start_date: "2026-08-01".parse().unwrap(),
+            end_date: "2026-08-31".parse().unwrap(),
+            tokens: Default::default(),
+            total_tokens: 0,
+            cost_usd: 0.0,
+            cache_savings_usd: 0.0,
+            event_count: 0,
+            session_count: 0,
+            by_provider: Vec::new(),
+            by_model: Vec::new(),
+            daily: Vec::new(),
+            by_project: Vec::new(),
+            scan_time_ms: 0,
+        };
+        UsageSnapshot {
+            cost_usd: 5.0,
+            by_project: vec![ProjectUsage {
+                path: path.to_owned(),
+                cost_usd: 5.0,
+                total_tokens: 500,
+                cost_fraction: 1.0,
+                token_fraction: 1.0,
+                view: UsageSnapshot {
+                    cost_usd: 5.0,
+                    total_tokens: 500,
+                    ..empty.clone()
+                },
+            }],
+            ..empty
+        }
+    }
+
+    #[test]
+    fn the_page_opens_on_every_project() {
+        let dashboard = Dashboard::new(TimeWindow::Last30Days);
+        assert!(dashboard.preferred_project.is_none());
+        assert!(dashboard.open_menu.is_none());
+        assert!(
+            dashboard
+                .effective_project(&snapshot_with_project("/w/app"))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_selected_project_draws_the_view_scanned_for_it() {
+        let mut dashboard = Dashboard::new(TimeWindow::Last30Days);
+        dashboard.preferred_project = Some(SharedString::from("/w/app"));
+
+        let snapshot = snapshot_with_project("/w/app");
+        let project = dashboard.effective_project(&snapshot).unwrap();
+        assert_eq!(project.view.total_tokens, 500);
+    }
+
+    #[test]
+    fn a_range_the_project_has_no_usage_in_shows_everything_without_forgetting_it() {
+        let mut dashboard = Dashboard::new(TimeWindow::Last30Days);
+        dashboard.preferred_project = Some(SharedString::from("/w/app"));
+
+        // Moving to a range the project is absent from draws the unfiltered
+        // page rather than an empty one...
+        let elsewhere = snapshot_with_project("/w/other");
+        assert!(dashboard.effective_project(&elsewhere).is_none());
+        // ...and the choice survives for when the project is back in range.
+        assert!(
+            dashboard
+                .effective_project(&snapshot_with_project("/w/app"))
+                .is_some()
+        );
     }
 
     #[test]

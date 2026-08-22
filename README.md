@@ -27,6 +27,9 @@ update check — a public GitHub Releases lookup you can turn off in Settings.
   token ranking while barely showing in the cost one; both numbers stay on screen.
 - **Time ranges** — last 7 / 30 / 90 days, this month, last month. Daily or monthly bars,
   with monthly offered only when the range actually spans more than one calendar month.
+- **Projects** — filter the whole page to the directory the work ran in, and see which
+  agents you use on each project and what they cost there. The menu ranks projects by the
+  selected metric, so the one running up the bill is the one at the top.
 - **Headline stats** — total cost, total tokens, event count, session count.
 - **Token breakdown** — processed tokens with a per-active-day average, cached input,
   fresh input, cache writes, output including reasoning, and estimated cache savings.
@@ -57,6 +60,12 @@ Mole never asks where your data is; each provider is read from its standard loca
 | Antigravity | `~/.gemini/antigravity/conversations` | SQLite + protobuf blobs |
 
 Missing directories are skipped, so only the agents you actually use show up.
+
+Each provider also records the directory a session ran in, which is what the project filter
+groups by: Claude and Codex write it on their transcripts, Kimi keeps it in the session's
+`state.json`, OpenCode on the session row, and Antigravity in the conversation's trajectory
+metadata. Usage from a record that names no directory is grouped as "Unknown project" rather
+than dropped from the totals.
 
 ## How cost is computed
 
@@ -121,8 +130,13 @@ Releasing is documented in [docs/RELEASING.md](docs/RELEASING.md).
 ## Usage
 
 Mole scans on launch by default and shows a skeleton while it works. Pick a range from the
-pill in the filter bar, switch between cost and tokens on the chart, and hover a bar for its
-breakdown. Turning a provider off in Settings removes it from the next scan entirely.
+pill in the filter bar, narrow to one project from the pill beside it, switch between cost
+and tokens on the chart, and hover a bar for its breakdown. Turning a provider off in
+Settings removes it from the next scan entirely.
+
+Only the range costs a rescan. The project filter, the Daily/Monthly switch and the
+cost/tokens switch are all views over the scan already in hand: each scan works out what
+every project spent, so filtering to one re-renders the page without touching the disk.
 
 An open window also rescans on its own every 15 minutes; Settings → Scanning offers 5, 15 or
 30 minutes, an hour, or Off. Automatic scans leave the dashboard on screen rather than
