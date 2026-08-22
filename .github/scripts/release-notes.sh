@@ -172,11 +172,11 @@ section() {
 # ---------------------------------------------------------------------------
 
 if [[ "$CHANNEL" == "beta" ]]; then
-    printf '## Drift %s — Beta\n\n' "$VERSION"
+    printf '## Mole %s — Beta\n\n' "$VERSION"
     printf 'A pre-release build. It gets new work first and may be rough; '
     printf 'people on the Stable channel are not offered it.\n\n'
 else
-    printf '## Drift %s\n\n' "$VERSION"
+    printf '## Mole %s\n\n' "$VERSION"
 fi
 
 if ((${#features[@]} + ${#improvements[@]} + ${#fixes[@]} + ${#other[@]} == 0)); then
@@ -189,8 +189,8 @@ else
 fi
 
 printf '### Install\n\n'
-printf 'Download the DMG below, drag Drift to Applications, and open it.\n'
-printf 'Drift checks for updates on the **%s** channel by default; ' \
+printf 'Download the DMG below, drag Mole to Applications, and open it.\n'
+printf 'Mole checks for updates on the **%s** channel by default; ' \
     "$([[ "$CHANNEL" == "beta" ]] && printf 'Beta' || printf 'Stable')"
 printf 'you can change that in Settings → Updates.\n\n'
 

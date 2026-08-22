@@ -208,7 +208,7 @@ jobs:
           APPLE_API_KEY_PATH: ${{ steps.notary.outputs.key_path }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          BUNDLE_ID: ${{ vars.BUNDLE_ID || 'com.trongduong.drift' }}
+          BUNDLE_ID: ${{ vars.BUNDLE_ID || 'com.trongduong.mole' }}
           # Stamped in so a fork's builds check the fork's releases.
           DRIFT_UPDATE_REPO: ${{ github.repository }}
         run: |
@@ -225,10 +225,10 @@ jobs:
           set -euo pipefail
           mount_point="$(mktemp -d)"
           hdiutil attach "$DMG" -nobrowse -readonly -mountpoint "$mount_point" >/dev/null
-          plist="$mount_point/Drift.app/Contents/Info.plist"
+          plist="$mount_point/Mole.app/Contents/Info.plist"
 
-          version="$(/usr/libexec/PlistBuddy -c 'Print :DriftReleaseVersion' "$plist")"
-          channel="$(/usr/libexec/PlistBuddy -c 'Print :DriftReleaseChannel' "$plist")"
+          version="$(/usr/libexec/PlistBuddy -c 'Print :MoleReleaseVersion' "$plist")"
+          channel="$(/usr/libexec/PlistBuddy -c 'Print :MoleReleaseChannel' "$plist")"
           echo "Bundle reports $version on the $channel channel"
 
           # The artifact and the release must agree about what they are: this
@@ -237,10 +237,10 @@ jobs:
           [[ "$channel" == "$EXPECTED_CHANNEL" ]] || { echo "::error::bundle channel $channel != $EXPECTED_CHANNEL"; exit 1; }
 
           if [[ "${{ steps.signing.outputs.available }}" == "true" ]]; then
-            codesign --verify --deep --strict "$mount_point/Drift.app"
+            codesign --verify --deep --strict "$mount_point/Mole.app"
             if [[ "${{ steps.notary.outputs.available }}" == "true" ]]; then
               # The check Gatekeeper itself runs on first launch.
-              spctl --assess --type execute --verbose "$mount_point/Drift.app"
+              spctl --assess --type execute --verbose "$mount_point/Mole.app"
             fi
           fi
 
@@ -274,7 +274,7 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          args=(--title "Drift $VERSION" --notes-file "$NOTES" --target "$GITHUB_SHA")
+          args=(--title "Mole $VERSION" --notes-file "$NOTES" --target "$GITHUB_SHA")
 
           # The pre-release flag is what the update checker reads to keep a
           # beta away from stable users.
