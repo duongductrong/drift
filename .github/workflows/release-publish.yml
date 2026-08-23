@@ -161,6 +161,11 @@ jobs:
             -s -k "$password" "$keychain" >/dev/null
           security list-keychains -d user -s "$keychain" login.keychain-db
 
+          # Names and SHA-1 fingerprints are public metadata; seeing them next
+          # to each other here is what turns a later "no identity found" from
+          # guessing into a straight comparison against APPLE_SIGNING_IDENTITY.
+          security find-identity -v -p codesigning "$keychain"
+
           rm -f "$certificate"
           echo "available=true" >> "$GITHUB_OUTPUT"
           echo "keychain=$keychain" >> "$GITHUB_OUTPUT"
