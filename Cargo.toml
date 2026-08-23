@@ -1,6 +1,6 @@
 [package]
 name = "mole"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 
 # macOS names an unbundled app after its executable file, so the binary is
