@@ -13,6 +13,28 @@ name: Release Publish
 on:
   pull_request:
     types: [closed]
+  # Escape hatch for republishing a release whose pull request already merged
+  # (e.g. the first attempt failed on the runner): everything the pull request
+  # body would have said arrives as inputs instead.
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: "Release channel"
+        type: choice
+        required: true
+        default: stable
+        options:
+          - beta
+          - stable
+      version:
+        description: "Version to publish (e.g. 1.0.0). Empty uses Cargo.toml's."
+        type: string
+        required: false
+      draft:
+        description: "Publish as a draft"
+        type: boolean
+        required: false
+        default: false
 
 # Creates the tag and publishes the release.
 permissions:
@@ -28,8 +50,9 @@ jobs:
   publish:
     name: Build and publish
     if: >-
-      github.event.pull_request.merged == true &&
-      startsWith(github.event.pull_request.head.ref, 'release/')
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.merged == true &&
+       startsWith(github.event.pull_request.head.ref, 'release/'))
     # macOS is not a preference here: the .app, the DMG, codesign and
     # notarytool all need it.
     runs-on: macos-14
@@ -54,42 +77,64 @@ jobs:
       - name: Read the release metadata back
         id: meta
         env:
+          EVENT: ${{ github.event_name }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           PR_BODY: ${{ github.event.pull_request.body }}
+          INPUT_CHANNEL: ${{ inputs.channel }}
+          INPUT_DRAFT: ${{ inputs.draft }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
 
-          # Branch name is release/<tag>; everything else derives from that.
-          tag="${HEAD_REF#release/}"
-          version="${tag#v}"
+          if [[ "$EVENT" == "workflow_dispatch" ]]; then
+            # Manual republish: the version stamp already merged into main
+            # with the original release pull request, so Cargo.toml is the
+            # source of truth and the inputs only carry channel/draft.
+            channel="$INPUT_CHANNEL"
+            draft="${INPUT_DRAFT:-false}"
+            [[ "$channel" == "beta" || "$channel" == "stable" ]] || { echo "::error::unknown channel '$channel'" >&2; exit 1; }
+            [[ "$draft" == "true" || "$draft" == "false" ]] || { echo "::error::unknown draft flag '$draft'" >&2; exit 1; }
+
+            version="${INPUT_VERSION#v}"
+            if [[ -z "$version" ]]; then
+              version="$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -1)"
+            fi
+
+            tag="v$version"
+          else
+            # Branch name is release/<tag>; everything else derives from that.
+            tag="${HEAD_REF#release/}"
+            version="${tag#v}"
+
+            meta="$(sed -n '/^<!-- release-metadata/,/^-->$/p' <<<"$PR_BODY" | sed '1d;$d')"
+            if [[ -z "$meta" ]]; then
+              echo "::error::no release-metadata block in the pull request body — this branch was not opened by the Release workflow" >&2
+              exit 1
+            fi
+
+            channel="$(awk '/^channel:/ { print $2 }' <<<"$meta")"
+            draft="$(awk '/^draft:/ { print $2 }' <<<"$meta")"
+            recorded_version="$(awk '/^version:/ { print $2 }' <<<"$meta")"
+
+            [[ "$channel" == "beta" || "$channel" == "stable" ]] || { echo "::error::unknown channel '$channel'" >&2; exit 1; }
+            [[ "$draft" == "true" || "$draft" == "false" ]] || { echo "::error::unknown draft flag '$draft'" >&2; exit 1; }
+
+            [[ "$recorded_version" == "$version" ]] || {
+              echo "::error::pull request body says $recorded_version but the branch is $version" >&2
+              exit 1
+            }
+          fi
 
           if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::'$version' (from $HEAD_REF) is not a semantic version" >&2
+            echo "::error::'$version' (from $tag) is not a semantic version" >&2
             exit 1
           fi
-
-          meta="$(sed -n '/^<!-- release-metadata/,/^-->$/p' <<<"$PR_BODY" | sed '1d;$d')"
-          if [[ -z "$meta" ]]; then
-            echo "::error::no release-metadata block in the pull request body — this branch was not opened by the Release workflow" >&2
-            exit 1
-          fi
-
-          channel="$(awk '/^channel:/ { print $2 }' <<<"$meta")"
-          draft="$(awk '/^draft:/ { print $2 }' <<<"$meta")"
-          recorded_version="$(awk '/^version:/ { print $2 }' <<<"$meta")"
-
-          [[ "$channel" == "beta" || "$channel" == "stable" ]] || { echo "::error::unknown channel '$channel'" >&2; exit 1; }
-          [[ "$draft" == "true" || "$draft" == "false" ]] || { echo "::error::unknown draft flag '$draft'" >&2; exit 1; }
 
           # The whole point of the pull request was to put this version in the
           # tree; if the two disagree, something edited one of them.
           manifest_version="$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -1)"
           [[ "$manifest_version" == "$version" ]] || {
             echo "::error::Cargo.toml says $manifest_version but the release branch says $version" >&2
-            exit 1
-          }
-          [[ "$recorded_version" == "$version" ]] || {
-            echo "::error::pull request body says $recorded_version but the branch is $version" >&2
             exit 1
           }
 
@@ -160,6 +205,17 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: \
             -s -k "$password" "$keychain" >/dev/null
           security list-keychains -d user -s "$keychain" login.keychain-db
+
+          # A .p12 export usually carries only the leaf certificate, and a
+          # fresh runner keychain has no cached Apple intermediates to complete
+          # the chain — codesign then reports "no identity found" even though
+          # the import above succeeded. This CA is public and pinned to
+          # apple.com over TLS; add further intermediates here if a future
+          # certificate chains through a different one.
+          curl --silent --fail --location \
+            https://www.apple.com/certificateauthority/DeveloperIDCA.cer \
+            -o "$RUNNER_TEMP/developer-id-ca.cer"
+          security import "$RUNNER_TEMP/developer-id-ca.cer" -k "$keychain"
 
           # Names and SHA-1 fingerprints are public metadata; seeing them next
           # to each other here is what turns a later "no identity found" from
