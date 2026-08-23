@@ -178,10 +178,22 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git checkout -b "$branch"
+          # A run that fails after the push (e.g. while opening the pull
+          # request) leaves the branch behind, and the next run of the same
+          # version would build a divergent history that push then rejects as
+          # non-fast-forward. The tag check in the version step proves this
+          # release was never published, so replacing the leftover is safe.
+          force=""
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
+            echo "::warning::remote $branch already exists from an earlier attempt — replacing it"
+            force="--force"
+          fi
+
+          git checkout -B "$branch"
           git add Cargo.toml Cargo.lock
           git commit -m "chore(release): prepare $TAG ($CHANNEL)"
-          git push origin "$branch"
+          # shellcheck disable=SC2086
+          git push $force origin "$branch"
 
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
 
