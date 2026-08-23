@@ -154,7 +154,6 @@ notarize() {
 
     note "Notarizing $(basename "$path") — this waits on Apple"
     xcrun notarytool submit "$path" "${args[@]}" --wait --timeout 30m
-    xcrun stapler staple "$path"
 }
 
 if [[ -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
@@ -165,11 +164,11 @@ if [[ -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
 
     if can_notarize; then
         # notarytool takes an archive, not a bundle, so the app goes to Apple
-        # zipped and the staple lands on the bundle itself.
+        # zipped and the staple lands on the bundle itself. The zip is only
+        # the envelope — stapler cannot staple a zip, so it never sees one.
         ZIP_PATH="$OUT_DIR/$APP_NAME-$VERSION-$ARCH.zip"
         /usr/bin/ditto -c -k --keepParent "$APP_DIR" "$ZIP_PATH"
         notarize "$ZIP_PATH" || die "notarization of the app failed"
-        # The staple has to go on the bundle; the zip was only the envelope.
         xcrun stapler staple "$APP_DIR"
         rm -f "$ZIP_PATH"
     else
@@ -205,6 +204,9 @@ if [[ "$SIGNED" == "true" ]]; then
     sign "$DMG_PATH"
     if can_notarize; then
         notarize "$DMG_PATH" || die "notarization of the DMG failed"
+        # Unlike the zip envelope, a DMG can carry a staple — that is what
+        # lets it verify on a machine with no network.
+        xcrun stapler staple "$DMG_PATH"
     fi
 fi
 
